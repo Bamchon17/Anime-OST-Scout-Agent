@@ -22,7 +22,7 @@
 ### 1. Agent Brain & Workflow (แบม - Bam)
 รับผิดชอบ “สมองของระบบ” และการควบคุมการทำงานของ Agent
 * **LLM Selection:** เลือกโมเดล 
-* **Analyze Intent:** วิเคราะห์เจตนาของUser query
+* **Analyze Intent:** วิเคราะห์เจตนาของ User query
 * **Decide:** ให้ LLM ตัดสินว่าจะใช้อะไรตอบ ระหว่าง Retrieval (RAG) หรือ Call tools 
 * **Act** * พอตัดสินใจได้ก็ลงมือทำ
 * **Observe:** Evaluate Results (Loop --> Reason)
