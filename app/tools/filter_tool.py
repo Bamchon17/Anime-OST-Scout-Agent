@@ -9,10 +9,13 @@ tools/filter_tool.py
 
 ใช้ pandas filter ตรงๆ — เร็ว แม่น ไม่ต้องการ embedding
 """
-
+import os
 import json
-
 import pandas as pd
+
+# คำนวณ path ให้ถูกต้อง
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) 
+DATA_PATH = os.path.join(BASE_DIR, "rag", "data", "prepared_anime.json")
 
 # ───────────────────────────────────────────────
 # TOOL DEFINITION
@@ -46,7 +49,7 @@ TOOL_DEFINITION = {
             },
             "type": {
                 "type": "string",
-                "description": "ประเภท: TV | Movie",
+                "description": "ประเภท: TV | Movie | OVA",
             },
             "rating_min": {
                 "type": "number",
@@ -75,13 +78,12 @@ TOOL_DEFINITION = {
                 "default": 5,
             },
         },
-        "required": [],   # ไม่มี required — ใส่อะไรก็ได้อย่างน้อย 1 field
+        "required": [], 
     },
 }
 
-
 # ───────────────────────────────────────────────
-# DATA LOADER — โหลดครั้งเดียว
+# DATA LOADER — ปรับปรุงให้แปลง Type ข้อมูลให้ถูกต้อง
 # ───────────────────────────────────────────────
 
 _df: pd.DataFrame | None = None
@@ -89,29 +91,42 @@ _df: pd.DataFrame | None = None
 def _get_df() -> pd.DataFrame:
     global _df
     if _df is None:
-        with open("data/prepared_anime.json", encoding="utf-8") as f:
+        if not os.path.exists(DATA_PATH):
+            raise FileNotFoundError(f"หาไฟล์ไม่เจอที่: {DATA_PATH}")
+            
+        with open(DATA_PATH, encoding="utf-8") as f:
             records = json.load(f)
 
-        # แตก filter_meta ออกมาเป็น columns ตรงๆ
         rows = []
         for r in records:
+            # รวม data หลักกับ filter_meta เข้าด้วยกัน
+            meta = r.get("filter_meta", {})
             row = {
-                "chunk_id":    r["chunk_id"],
-                "title_en":    r["title_en"],
-                "title":       r["title"],
-                "rating":      r["rating"],
-                "year":        r["year"],
-                "type":        r["type"],
-                "synopsis":    r["synopsis"],
+                "chunk_id":    r.get("chunk_id"),
+                "title_en":    r.get("title_en"),
+                "title":       r.get("title"),
+                "synopsis":    r.get("synopsis", ""),
                 "image_url":   r.get("image_url", ""),
                 "mal_url":     r.get("mal_url", ""),
-                **r["filter_meta"],   # year, season, type, rating, tags, studio, music_style
+                # ดึงจาก root หรือ meta ก็ได้เพื่อความเหนียวแน่น
+                "rating":      r.get("rating", meta.get("rating", 0)),
+                "year":        r.get("year", meta.get("year")),
+                "type":        r.get("type", meta.get("type", "TV")),
+                "season":      meta.get("season", "unknown"),
+                "tags":        meta.get("tags", []),
+                "studio":      meta.get("studio", "unknown"),
+                "music_style": meta.get("music_style", "unknown"),
             }
             rows.append(row)
 
-        _df = pd.DataFrame(rows)
+        df_tmp = pd.DataFrame(rows)
+        
+        # คลีนข้อมูล: แปลงเป็น Numeric และจัดการค่าว่าง
+        df_tmp["year"] = pd.to_numeric(df_tmp["year"], errors='coerce')
+        df_tmp["rating"] = pd.to_numeric(df_tmp["rating"], errors='coerce').fillna(0)
+        
+        _df = df_tmp
     return _df
-
 
 # ───────────────────────────────────────────────
 # HANDLER
@@ -131,111 +146,99 @@ def run(
     top_k:       int    = 5,
 ) -> dict:
     """
-    กรอง anime ตาม conditions ที่ระบุ
-    ทุก condition เป็น AND — ยิ่งใส่มาก ยิ่งกรองเยอะ
-
-    Return format เหมือน semantic_tool เพื่อให้ agent ใช้ร่วมกันได้
+    กรอง anime ตามเงื่อนไขที่ได้รับ
     """
     df = _get_df().copy()
     applied_filters = []
 
-    # ── Year ──
+    # Filter: Year (รองรับทั้งปีเดียวและช่วงปี)
     if year is not None:
         df = df[df["year"] == year]
-        applied_filters.append(f"year={year}")
-
+        applied_filters.append(f"year=={year}")
+    
     if year_from is not None:
         df = df[df["year"] >= year_from]
-        applied_filters.append(f"year≥{year_from}")
+        applied_filters.append(f"year>={year_from}")
 
     if year_to is not None:
         df = df[df["year"] <= year_to]
-        applied_filters.append(f"year≤{year_to}")
+        applied_filters.append(f"year<={year_to}")
 
-    # ── Season ──
-    if season is not None:
+    # Filter: Season
+    if season:
         df = df[df["season"].str.lower() == season.lower()]
-        applied_filters.append(f"season={season}")
+        applied_filters.append(f"season=={season}")
 
-    # ── Type ──
-    if type is not None:
+    # Filter: Type
+    if type:
         df = df[df["type"].str.upper() == type.upper()]
-        applied_filters.append(f"type={type}")
+        applied_filters.append(f"type=={type}")
 
-    # ── Rating ──
+    # Filter: Rating
     if rating_min is not None:
         df = df[df["rating"] >= rating_min]
-        applied_filters.append(f"rating≥{rating_min}")
+        applied_filters.append(f"rating>={rating_min}")
 
     if rating_max is not None:
         df = df[df["rating"] <= rating_max]
-        applied_filters.append(f"rating≤{rating_max}")
+        applied_filters.append(f"rating<={rating_max}")
 
-    # ── Tags (AND — ต้องมีทุก tag ที่ระบุ) ──
-    if tags:
+    # Filter: Tags (ต้องมีครบทุก Tag ที่ส่งมา)
+    if tags and isinstance(tags, list):
         for tag in tags:
-            df = df[df["tags"].apply(lambda t: tag.lower() in [x.lower() for x in t])]
-        applied_filters.append(f"tags={tags}")
+            if tag: # กันค่าว่าง
+                df = df[df["tags"].apply(lambda t: tag.lower() in [x.lower() for x in t] if isinstance(t, list) else False)]
+        applied_filters.append(f"tags_include={tags}")
 
-    # ── Studio (partial match) ──
-    if studio is not None:
+    # Filter: Studio (ค้นหาแบบคำบางส่วน)
+    if studio:
         df = df[df["studio"].str.contains(studio, case=False, na=False)]
-        applied_filters.append(f"studio~'{studio}'")
+        applied_filters.append(f"studio_like='{studio}'")
 
-    # ── Music style (partial match) ──
-    if music_style is not None:
+    # Filter: Music Style
+    if music_style:
         df = df[df["music_style"].str.contains(music_style, case=False, na=False)]
-        applied_filters.append(f"music_style~'{music_style}'")
+        applied_filters.append(f"music_style_like='{music_style}'")
 
-    # ── เรียงตาม rating แล้ว top_k ──
-    df = df.sort_values("rating", ascending=False).head(top_k)
+    # เรียงลำดับตามความนิยม (Rating) และตัดเอาเฉพาะที่ต้องการ
+    df = df.sort_values("rating", ascending=False)
+    final_df = df.head(top_k)
 
-    print(f"[filter_tool] filters={applied_filters}  พบ {len(df)} results")
+    print(f"[filter_tool] applied_filters={applied_filters} | Found: {len(final_df)}/{len(df)}")
 
     results = [
         {
-            "rank":     i + 1,
-            "chunk_id": row["chunk_id"],
-            "title_en": row["title_en"],
-            "title":    row["title"],
-            "rating":   row["rating"],
-            "year":     row["year"],
-            "season":   row["season"],
-            "type":     row["type"],
-            "tags":     row["tags"],
-            "studio":   row["studio"],
-            "synopsis": row["synopsis"],
+            "rank":      i + 1,
+            "chunk_id":  row["chunk_id"],
+            "title_en":  row["title_en"],
+            "title":     row["title"],
+            "rating":    row["rating"],
+            "year":      int(row["year"]) if pd.notnull(row["year"]) else None,
+            "season":    row["season"],
+            "type":      row["type"],
+            "tags":      row["tags"],
+            "studio":    row["studio"],
+            "synopsis":  row["synopsis"],
             "image_url": row["image_url"],
-            "mal_url":  row["mal_url"],
+            "mal_url":   row["mal_url"],
         }
-        for i, (_, row) in enumerate(df.iterrows())
+        for i, (_, row) in enumerate(final_df.iterrows())
     ]
 
     return {
-        "tool":             "filter_search",
-        "applied_filters":  applied_filters,
+        "tool":            "filter_search",
+        "applied_filters": applied_filters,
         "total_found":      len(results),
         "results":          results,
     }
 
-
 # ───────────────────────────────────────────────
-# ENTRY POINT — ทดสอบ
+# TEST BLOCK
 # ───────────────────────────────────────────────
 
 if __name__ == "__main__":
-    tests = [
-        {"rating_min": 9.0},
-        {"year_from": 2010, "year_to": 2020, "tags": ["action"]},
-        {"type": "Movie", "rating_min": 8.5},
-        {"studio": "Mappa"},
-        {"season": "spring", "rating_min": 8.0},
-    ]
-
-    for kwargs in tests:
-        print("\n" + "═" * 60)
-        print(f"Filter: {kwargs}")
-        output = run(**kwargs)
-        print(f"พบ {output['total_found']} results")
-        for r in output["results"]:
-            print(f"  {r['rank']}. {r['title_en']}  ★{r['rating']}  ({r['year']} {r['season']})")
+    # ทดสอบเคสปี 2021 ที่เคยพัง
+    print("\n--- Test Case: Year 2021 ---")
+    res = run(year=2021, rating_min=5.0)
+    for r in res["results"]:
+        print(f"{r['rank']}. {r['title_en']} ({r['year']}) - Star: {r['rating']}")

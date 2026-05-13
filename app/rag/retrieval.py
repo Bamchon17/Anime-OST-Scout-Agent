@@ -1,30 +1,36 @@
 """
 retrieval.py
 ------------
-รับ query → embed → search FAISS → rerank ด้วย Claude
+รับ query → embed → search FAISS → rerank ด้วย Ollama typhoon-ai/llama-3-typhoon-v1.5-8b-instruct
 คืน top results พร้อม score และ reasoning
 
 ใช้งาน:
   from retrieval import retrieve
   results = retrieve("อนิเมะแนว psychological ที่ทำให้คิดเยอะ", index_type="general")
+
+ต้องการ:
+  pip install openai sentence-transformers faiss-cpu
+  ollama pull supachai/llama-3-typhoon-v1.5:8b-instruct
 """
 
 import json
+import re
 
 import numpy as np
-from anthropic import Anthropic
-from embedder import embed_query
 from sentence_transformers import SentenceTransformer
-from vector_store import load_indexes, search
+from openai import OpenAI
+from .embedder import embed_query, MODEL_NAME
+from .vector_store import load_indexes, search
 
 # ───────────────────────────────────────────────
 # CONFIG
 # ───────────────────────────────────────────────
 
-FAISS_TOP_K    = 10   # ดึงจาก FAISS ก่อน 10 อัน
-RERANK_TOP_K   = 3    # หลัง rerank เหลือ 3 อัน
+FAISS_TOP_K     = 10                          
+RERANK_TOP_K    = 3                         
 
-CLAUDE_MODEL   = "claude-sonnet-4-20250514"
+OLLAMA_MODEL    = "supachai/llama-3-typhoon-v1.5:8b-instruct"               # เปลี่ยนได้: typhoon-v2.1-7b-instruct, qwen2.5:7b
+OLLAMA_BASE_URL = "http://localhost:11434/v1"  # Ollama default port
 
 
 # ───────────────────────────────────────────────
@@ -33,6 +39,7 @@ CLAUDE_MODEL   = "claude-sonnet-4-20250514"
 
 _indexes  = None   # (gen_index, mus_index, gen_meta, mus_meta)
 _st_model = None   # SentenceTransformer
+_client   = None   # OpenAI client → Ollama
 
 
 def _get_indexes():
@@ -45,9 +52,19 @@ def _get_indexes():
 def _get_st_model():
     global _st_model
     if _st_model is None:
-        from embedder import MODEL_NAME
         _st_model = SentenceTransformer(MODEL_NAME)
     return _st_model
+
+
+def _get_client():
+    """OpenAI-compatible client ชี้ไปที่ Ollama local server"""
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key="ollama",          # Ollama ไม่เช็ค key ใส่อะไรก็ได้
+            base_url=OLLAMA_BASE_URL,
+        )
+    return _client
 
 
 # ───────────────────────────────────────────────
@@ -94,15 +111,14 @@ def retrieve(
 # ───────────────────────────────────────────────
 # RERANKING
 # ───────────────────────────────────────────────
-
 def _rerank(query: str, candidates: list[dict], top_k: int) -> list[dict]:
     """
-    ส่ง candidates ให้ Claude เรียงลำดับใหม่ตามความเกี่ยวข้องกับ query
+    ส่ง candidates ให้ Ollama (typhoon-v1.5:8b-instruct) เรียงลำดับใหม่ตามความเกี่ยวข้องกับ query
     คืน top_k results พร้อม rerank_reason แต่ละตัว
     """
-    client = Anthropic()
+    client = _get_client()
 
-    # สร้าง numbered list สำหรับ Claude
+    # สร้าง numbered list สำหรับโมเดล
     candidates_text = "\n\n".join([
         f"[{i+1}] {c['title_en']} (rating: {c['rating']}, score: {c['score']:.3f})\n"
         f"    Tags: {', '.join(c['filter_meta']['tags'])}\n"
@@ -131,36 +147,63 @@ Example format:
 
 Return JSON only, no other text."""
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
+    print(f"[retrieval] reranking {len(candidates)} candidates ด้วย {OLLAMA_MODEL}...")
+
+    response = client.chat.completions.create(
+        model=OLLAMA_MODEL,
         max_tokens=1000,
+        temperature=0,             # ลด randomness → JSON แม่นขึ้น
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = response.content[0].text.strip()
+    raw = response.choices[0].message.content.strip()
 
-    try:
-        ranked = json.loads(raw)
-    except json.JSONDecodeError:
-        # ถ้า Claude ใส่ ```json ``` มาด้วย ให้ strip ออก
-        import re
-        match = re.search(r"\[.*\]", raw, re.DOTALL)
-        ranked = json.loads(match.group()) if match else []
+    # ── Parse JSON ──
+    ranked = _parse_json(raw)
 
-    # map กลับเป็น result objects
+    # ── Map กลับเป็น result objects ──
     results = []
     for item in ranked[:top_k]:
-        idx = item["index"] - 1   # แปลงจาก 1-based → 0-based
+        idx = item.get("index", 0) - 1   # แปลงจาก 1-based → 0-based
         if 0 <= idx < len(candidates):
             result = {**candidates[idx], "rerank_reason": item.get("reason", "")}
             results.append(result)
 
-    # fallback ถ้า rerank ล้มเหลว
+    # ── Fallback ถ้า rerank ล้มเหลว ──
     if not results:
         print("[retrieval] rerank ล้มเหลว — ใช้ FAISS score แทน")
         results = candidates[:top_k]
 
     return results
+
+
+def _parse_json(raw: str) -> list[dict]:
+    """
+    Parse JSON จาก LLM output — รองรับกรณีที่โมเดลใส่ ```json ``` มาด้วย
+    """
+    # ลอง parse ตรงๆ ก่อน
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # ลอง strip ```json ... ``` หรือ ``` ... ```
+    stripped = re.sub(r"```(?:json)?", "", raw).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    # ลอง extract [ ... ] ออกมา
+    match = re.search(r"\[.*\]", raw, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    print(f"[retrieval] parse JSON ล้มเหลว raw output:\n{raw[:300]}")
+    return []
 
 
 # ───────────────────────────────────────────────
@@ -187,18 +230,18 @@ def retrieve_no_rerank(query: str, top_k: int = FAISS_TOP_K) -> list[dict]:
 # ENTRY POINT — ทดสอบ
 # ───────────────────────────────────────────────
 
-if __name__ == "__main__":
-    test_queries = [
-        "อนิเมะแนว psychological ที่ทำให้คิดเยอะ",
-        "anime with beautiful orchestral soundtrack",
-        "dark fantasy action แบบ attack on titan",
-    ]
+# if __name__ == "__main__":
+#     test_queries = [
+#         "อนิเมะแนว psychological ที่ทำให้คิดเยอะ",
+#         "anime with beautiful orchestral soundtrack",
+#         "dark fantasy action แบบ attack on titan",
+#     ]
 
-    for q in test_queries:
-        print("\n" + "═" * 60)
-        results = retrieve(q)
-        for i, r in enumerate(results, 1):
-            print(f"\n{i}. {r['title_en']}  (score={r['score']:.3f})")
-            if "rerank_reason" in r:
-                print(f"   → {r['rerank_reason']}")
-        print()
+#     for q in test_queries:
+#         print("\n" + "═" * 60)
+#         results = retrieve(q)
+#         for i, r in enumerate(results, 1):
+#             print(f"\n{i}. {r['title_en']}  (score={r['score']:.3f})")
+#             if "rerank_reason" in r:
+#                 print(f"   → {r['rerank_reason']}")
+#         print()

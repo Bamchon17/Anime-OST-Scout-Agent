@@ -12,9 +12,13 @@ tools/compare_tool.py
 """
 
 import json
+import os
 from difflib import SequenceMatcher
 
 import pandas as pd
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # ถอยจาก tools -> app
+DATA_PATH = os.path.join(BASE_DIR, "rag", "data", "prepared_anime.json")
 
 # ───────────────────────────────────────────────
 # TOOL DEFINITION
@@ -52,7 +56,7 @@ _records: list[dict] | None = None
 def _get_records() -> list[dict]:
     global _records
     if _records is None:
-        with open("data/prepared_anime.json", encoding="utf-8") as f:
+        with open(DATA_PATH, encoding="utf-8") as f:
             _records = json.load(f)
     return _records
 
@@ -74,10 +78,15 @@ def _find_anime(query: str) -> dict | None:
     best_match = None
 
     for r in records:
+        # รวมทุกชื่อที่เป็นไปได้เข้าด้วยกัน
         candidates = [
-            r["title_en"].lower(),
-            r["title"].lower(),
+            r.get("title_en", "").lower(),
+            r.get("title", "").lower(),
+            r.get("title_ja", "").lower()
         ]
+        # ลบค่าที่เป็น None หรือว่างออก
+        candidates = [c for c in candidates if c]
+
         # เพิ่ม title_ja ถ้ามี
         if r.get("title_ja"):
             candidates.append(r["title_ja"].lower())
@@ -89,16 +98,17 @@ def _find_anime(query: str) -> dict | None:
 
             # partial match — query อยู่ใน title
             if query_lower in candidate or candidate in query_lower:
-                score = 0.9
+                score = 0.95
             else:
+                # 3. Fuzzy Match (ใช้กรณีพิมพ์ผิดนิดหน่อย)
                 score = SequenceMatcher(None, query_lower, candidate).ratio()
 
             if score > best_score:
                 best_score = score
                 best_match = r
 
-    # threshold 0.5 — ต่ำกว่านี้ถือว่าไม่เจอ
-    return best_match if best_score >= 0.5 else None
+    # threshold 0.6 — ต่ำกว่านี้ถือว่าไม่เจอ
+    return best_match if best_score >= 0.6 else None
 
 
 # ───────────────────────────────────────────────

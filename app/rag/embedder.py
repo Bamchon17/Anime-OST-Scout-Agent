@@ -155,7 +155,7 @@ def _sanity_check(general: np.ndarray, music: np.ndarray) -> None:
     assert not np.isnan(music).any(),   "พบ NaN ใน music vectors!"
 
     norms = np.linalg.norm(general, axis=1)
-    print(f"\n[embedder] sanity check ผ่าน ✓")
+    print(f"\n[embedder] sanity check ผ่าน [OK]")
     print(f"  dim={dim}, norm: min={norms.min():.4f}, max={norms.max():.4f} (ควรใกล้ 1.0)")
 
 

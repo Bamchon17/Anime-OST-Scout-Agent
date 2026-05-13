@@ -21,7 +21,7 @@ import os
 import faiss
 import numpy as np
 
-from embedder import embed_query, load_embeddings
+from .embedder import embed_query, load_embeddings
 from sentence_transformers import SentenceTransformer
 
 # ───────────────────────────────────────────────
@@ -96,7 +96,7 @@ def build(
     _save_meta(meta, MUSIC_META)   # metadata เหมือนกัน index ต่างกัน
     print(f"  บันทึก → {MUSIC_FAISS}")
 
-    print(f"\n[vector_store] build เสร็จ ✓  ({len(records)} records, dim={dim})")
+    print(f"[vector_store] build เสร็จ [OK]  ({len(records)} records, dim={dim})")
 
 
 def _build_index(vectors: np.ndarray, dim: int) -> faiss.IndexFlatIP:
@@ -134,7 +134,7 @@ def load_indexes() -> tuple[faiss.IndexFlatIP, faiss.IndexFlatIP, list[dict], li
     with open(MUSIC_META, encoding="utf-8") as f:
         mus_meta = json.load(f)
 
-    print(f"[vector_store] โหลด indexes ✓  general={gen_index.ntotal}, music={mus_index.ntotal}")
+    print(f"[vector_store] โหลด indexes [OK]  general={gen_index.ntotal}, music={mus_index.ntotal}")
     return gen_index, mus_index, gen_meta, mus_meta
 
 
