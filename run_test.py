@@ -74,9 +74,9 @@ async def start_demo():
     
     # 2. จำลองคำถามจาก User
     test_queries = [
-        # "แนะนำ Naruto หน่อยเนื้อเรื่องตัวละครเป็นไงคร่าวๆ", #semantic_search 
+         "แนะนำเรื่องคลาสสิค แนวคล้ายๆcowboy bebopไหม", #semantic_search 
         # "มีเรื่องไหนที่ใช้เพลงแนว Hip-Hop บ้าง?", #music_lookup
-        "เปรียบเทียบ Naruto กับ Bleach", #compare_anime
+        # "เปรียบเทียบ Naruto กับ Bleach", #compare_anime
         # "อนิเมะที่ออกช่วง spring ที่มีคะแนนรีวิวมากกว่า 8" #filter_search
     ]
     

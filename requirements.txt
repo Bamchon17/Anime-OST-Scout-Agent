@@ -3,3 +3,4 @@ faiss-cpu>=1.8.0
 pandas>=2.0.0
 numpy>=1.26.0
 anthropic>=0.40.0
+spotipy

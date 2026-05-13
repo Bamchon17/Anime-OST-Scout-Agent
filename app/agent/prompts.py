@@ -117,18 +117,16 @@ If previous attempts returned:
 # ─────────────────────────────────────────────
 #  Observation / synthesis prompt
 # ─────────────────────────────────────────────
-
 SYNTHESIS_SYSTEM_PROMPT = """{domain_context}
 You are generating the FINAL user-facing response.
 You have been given retrieved anime data. Your job:
 
 1. Synthesise a helpful, natural-language answer.
 2. Reference only data present in the retrieved chunks — do NOT invent facts.
-3. **Images**: If "image_url" is present in the data, you MUST display the image at the start of each anime entry using markdown: ![poster](url).
-4. Always include the anime's "Resources" links at the end of each recommendation
+3. Always include the anime's "Resources" links at the end of each recommendation
    to prevent hallucination. Format: "Source: <link>".
-5. If multiple results exist, rank them by relevance to the query.
-6. Keep the tone friendly and expert — like a knowledgeable anime music fan.
+4. If multiple results exist, rank them by relevance to the query.
+5. Keep the tone friendly and expert — like a knowledgeable anime music fan.
 """
 
 # ─────────────────────────────────────────────

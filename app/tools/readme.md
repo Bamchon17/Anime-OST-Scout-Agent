@@ -1,0 +1,1 @@
+Credit: https://github.com/Aran404/SpotAPI.git

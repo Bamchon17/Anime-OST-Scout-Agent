@@ -3,7 +3,6 @@
 </p>
 
 
-
 #  Anime OST Scout Agent RAG
 
 ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
@@ -11,8 +10,7 @@
 
 
 ## 📌 Project Overview
-โปรเจกต์นี้เป็นการพัฒนา Agentic RAG System สำหรับการค้นหาและแนะนำ Anime ระบบถูกออกแบบให้เป็นเอเจนต์ที่สามารถเข้าใจเจตนาของผู้ใช้ วิเคราะห์ความกำกวมของคำถาม และตัดสินใจเลือกวิธีการตอบที่เหมาะสมผ่านการใช้เครื่องมือ (tools) ต่าง ๆ
-จุดเด่นของระบบคือการมี observability layer ที่บันทึกทุกขั้นตอนการทำงานของเอเจนต์ เช่น การเลือก tool, ผลลัพธ์ที่ค้นได้, และจำนวนรอบของการปรับปรุงคำตอบ ทำให้สามารถตรวจสอบและอธิบายกระบวนการตัดสินใจของ AI ได้อย่างโปร่งใส
+Luna Anime Agent กูรูคลังแสงอนิเมะที่ช่วยแนะนำเรื่องที่ใช่ และตามหาเพลง OST ที่ชอบ โดยเปลี่ยน 'มูด' และ 'ความต้องการ' ของคุณให้เป็นลิสต์อนิเมะที่ตรงใจที่สุด ด้วยระบบวิเคราะห์ความหมายและเครื่องมือเปรียบเทียบข้อมูลที่แม่นยำ
 ---
 
 ## 🛠 Project Structure & Responsibilities
@@ -21,18 +19,18 @@
 
 ### 1. Agent Brain & Workflow (แบม - Bam)
 รับผิดชอบ “สมองของระบบ” และการควบคุมการทำงานของ Agent
-* **LLM Selection:** เลือกโมเดล 
-* **Analyze Intent:** วิเคราะห์เจตนาของUser query
-* **Decide:** ให้ LLM ตัดสินว่าจะใช้อะไรตอบ ระหว่าง Retrieval (RAG) หรือ Call tools 
-* **Act** * พอตัดสินใจได้ก็ลงมือทำ
-* **Observe:** Evaluate Results (Loop --> Reason)
+* **LLM Selection:** เลือกโมเดล typhoon-v2.5-30b-a3b-instruct
+* **Planner:** 
+* **State:** 
+* **Controller** 
+* **Prompts:** 
 
 ### 2. RAG & Tools Layer (คิว - Kew)
 Data Preparetion และ ระบบสืบค้นข้อมูล
 * **Data** นำเข้าข้อมูลจากKaggle 
-* **Create Tools**  Semantic, Recommend Too, Filter Tool, Compare Tool, Music Tool
-* **Embedding:** นำข้อมูลมาแปลงเป็นvector เพื่อเป็นฐานข้อมูล
-* **Vector Database:** เลือกใช้ FAISS หรือ Chroma
+* **Create Tools**  Semantic Tool, Filter Tool, Compare Tool, Music Tool 
+* **Embedding:** นำข้อมูลมาแปลงเป็น vector เพื่อเป็นฐานข้อมูล
+* **Vector Database:** เลือกใช้ FAISS 
 * **retrieval + reranking logic** 
 
 ### 3. API, Observability & Integration (มาร์ค - Mark)
