@@ -86,20 +86,34 @@ JSON schema (all fields required):
     "anime_title":  "string" | null
   }},
   "ambiguity":            "clear" | "vague" | "mixed",
-  "selected_tool":        "recommend_tool" | "compare_tool" | "filter_tool" | "music_tool" | "none",
+  "selected_tool":         "recommend_tool" | "compare_tool" | "filter_tool" | "music_tool" | "none",
   "retrieval_strategy":   "semantic" | "keyword" | "hybrid" | "skip",
   "rewritten_query":      "English expanded query for better search results",
   "reasoning":            "one sentence explaining this decision",
   "confidence":           0.0 to 1.0
 }}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DECISION RULES
+DECISION RULES (PRIORITY ORDER)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. If query mentions mood/genre/vibe                → recommend_tool,  semantic
-2. If query names a specific composer or OST style  → music_tool,      keyword or hybrid
-3. If query asks to compare two or more titles      → compare_tool,    hybrid
-4. If query filters only by year / type / rating    → filter_tool,     skip
-5. If query is a simple follow-up (e.g. "tell me more about #1") → none, skip
+1. [MUSIC - SPECIFIC] If user asks for music/link from a SPECIFIC title 
+   (e.g., "ขอเพลงจากเรื่อง Naruto", "ฟังเพลง One Piece") 
+   → music_tool, retrieval_strategy: "hybrid" (to enable exact match and YouTube links)
+
+2. [MUSIC - GENERAL] If user asks for music RECOMMENDATIONS by mood/composer/style 
+   (e.g., "แนะนำเพลงแนว Jazz", "ขอเพลงเศร้าๆ", "เพลงของ Sawano") 
+   → music_tool, retrieval_strategy: "semantic" (no direct YouTube link needed)
+
+3. [RECOMMEND] If query mentions mood/genre/vibe for anime 
+   → recommend_tool, retrieval_strategy: "semantic"
+
+4. [COMPARE] If query asks to compare two or more titles 
+   → compare_tool, retrieval_strategy: "hybrid"
+
+5. [FILTER] If query filters only by year / type / rating 
+   → filter_tool, retrieval_strategy: "skip"
+
+6. [FOLLOW-UP] If query is a simple follow-up (e.g. "tell me more about #1") 
+   → none, retrieval_strategy: "skip"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SELF-CORRECTION 
@@ -118,15 +132,39 @@ If previous attempts returned:
 #  Observation / synthesis prompt
 # ─────────────────────────────────────────────
 SYNTHESIS_SYSTEM_PROMPT = """{domain_context}
-You are generating the FINAL user-facing response.
-You have been given retrieved anime data. Your job:
+You are generating the FINAL user-facing response. 
+You have been given retrieved anime and music data. Your job is to answer the user's question using ONLY the provided information.
 
-1. Synthesise a helpful, natural-language answer.
-2. Reference only data present in the retrieved chunks — do NOT invent facts.
-3. Always include the anime's "Resources" links at the end of each recommendation
-   to prevent hallucination. Format: "Source: <link>".
-4. If multiple results exist, rank them by relevance to the query.
-5. Keep the tone friendly and expert — like a knowledgeable anime music fan.
+══════════════════════════════════════════════════════
+⚠️ CRITICAL RULES — THE "GOLDEN SOURCE" MANDATE
+══════════════════════════════════════════════════════
+1. NO HALLUCINATION: Do NOT invent, guess, or hallucinate any URLs, YouTube links, or facts. 
+   - If a field is null, empty, or missing, simply do NOT mention it.
+   - NEVER create a link that looks plausible (e.g., do not guess a MAL ID).
+
+2. VERBATIM LINKS: You MUST copy URLs exactly as they appear in the "Source Links" or "YouTube" fields.
+   - Only use the YouTube URL if it is explicitly provided in the data.
+   - If the data says "No links" or the URL is missing, do NOT provide a "แหล่งข้อมูล" section for that item.
+
+3. DATA OVER PERSONA: While you must speak as 'Luna', the accuracy of the data is more important than the persona. 
+   - If the retrieved data does not match the user's query, say "ลูน่าหาข้อมูลที่ตรงเป๊ะๆ ไม่เจอเลยค่ะ" instead of suggesting random anime.
+
+4. FORMATTING MANDATE: 
+   Every anime/song mentioned MUST follow this exact format if links exist:
+   
+   (คำบรรยายจากลูน่า...)
+   🎵 **เพลงแนะนำ:** (ถ้ามี)
+   - [ชื่อเพลง] โดย [ศิลปิน]
+     [▶ YouTube](URL_จาก_DATA_เท่านั้น)
+   
+   📌 แหล่งข้อมูล: [🌐 Official](URL_จาก_DATA) | [📊 MAL](URL_จาก_DATA)
+
+══════════════════════════════════════════════════════
+FINAL CHECK BEFORE RESPONDING:
+- "Is this YouTube link in the retrieved data?" -> No? REMOVE IT.
+- "Is this Official website URL in the data?" -> No? REMOVE IT.
+- "Am I guessing this because I am an AI?" -> Yes? STOP AND REMOVE.
+══════════════════════════════════════════════════════
 """
 
 # ─────────────────────────────────────────────
@@ -157,14 +195,96 @@ def build_synthesis_prompt() -> str:
     """สร้าง System Prompt สำหรับขั้นตอนสรุปคำตอบ (AIDA Persona)"""
     return SYNTHESIS_SYSTEM_PROMPT.format(domain_context=DOMAIN_CONTEXT)
 
-def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]) -> str:
-    """สร้าง User Message สำหรับสรุปคำตอบ (ส่ง Data เข้าไปให้ LLM จัดการตาม Instruction ภาษาอังกฤษ)"""
-    # แปลงข้อมูลเป็น JSON เพื่อให้ LLM อ่านโครงสร้าง (รวมถึง image_url) ได้แม่นยำ
-    data_text = json.dumps(retrieved_data, ensure_ascii=False, indent=2)
-    
-    return (
-        f"User Query: {original_query}\n\n"
-        f"Retrieved Data (JSON):\n{data_text}\n\n"
-        "Please provide the final expert response based on the instructions."
-    )
+import json
 
+def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]) -> str:
+    # 1. กำหนด Base URL ของรูปภาพ (ตรวจสอบให้ตรงกับที่เก็บไฟล์จริงนะคะ)
+    IMAGE_BASE_URL = "https://your-storage-endpoint.com/data/images/" 
+    
+    prepared_items = []
+    for item in retrieved_data:
+        # ดึงชื่อเรื่อง
+        title = item.get('main_title') or item.get('title_en') or item.get('id') or "Unknown Title"
+        
+        # 2. จัดการรูปภาพ
+        poster = item.get('poster_image') or item.get('backdrop_image')
+        poster_url = f"{IMAGE_BASE_URL}{poster}" if poster else None
+        
+        # 3. จัดการ Resources (MAL, Official)
+        res = item.get('resources', {})
+        if isinstance(res, str): # แก้ปัญหาข้อมูลใน filter_meta เป็น String JSON
+            try:
+                res = json.loads(res)
+            except:
+                res = {}
+        
+        # แยก MAL / Official ออกมาก่อน เพื่อให้ LLM เห็นชัด
+        mal_url      = res.get("MAL", "") if isinstance(res, dict) else ""
+        official_url = res.get("Official website", "") if isinstance(res, dict) else ""
+
+        # links หลัก: Official + MAL ขึ้นก่อนเสมอ
+        primary_links = []
+        if official_url: primary_links.append(f"[🌐 Official]({official_url})")
+        if mal_url:      primary_links.append(f"[📊 MAL]({mal_url})")
+
+        # links รอง: ที่เหลือทั้งหมด (ยกเว้น Official/MAL ที่แสดงไปแล้ว)
+        skip_keys = {"Official website", "MAL"}
+        secondary_links = []
+        if isinstance(res, dict):
+            for site, url in res.items():
+                if url and site not in skip_keys:
+                    secondary_links.append(f"[{site}]({url})")
+
+        # YouTube จาก music_tool (root level) หรือขุดจาก themes[]
+        yt_link = item.get('youtube_url') or item.get('youtube')
+        if not yt_link:
+            themes = item.get('themes', [])
+            if themes:
+                yt_link = themes[0].get('youtube_url')
+        if yt_link:
+            primary_links.append(f"[▶ YouTube]({yt_link})")
+
+        # themes block (กรณี music mode)
+        themes_block = ""
+        if item.get('themes'):
+            lines = []
+            for t in item['themes']:
+                yt = t.get('youtube_url')
+                yt_str = f" → [▶ ฟัง]({yt})" if yt else ""
+                lines.append(f"  - **{t.get('type','?')}**: {t.get('song','?')} — {t.get('artist','?')}{yt_str}")
+            themes_block = "\n**🎵 เพลงประกอบ:**\n" + "\n".join(lines)
+
+        # รวม links เป็น string — แยก primary และ secondary
+        primary_str   = " | ".join(primary_links)   if primary_links   else ""
+        secondary_str = " | ".join(secondary_links) if secondary_links else ""
+
+        links_section = "**📌 แหล่งข้อมูล (ต้องแสดงทุกเรื่อง):**\n"
+        if primary_str:   links_section += f"  {primary_str}\n"
+        if secondary_str: links_section += f"  ลิงก์เพิ่มเติม: {secondary_str}\n"
+        if not primary_str and not secondary_str:
+            links_section += "  ไม่มีลิงก์ข้อมูลเพิ่มเติม\n"
+
+        # สร้าง Block ข้อมูลสำหรับ 1 เรื่อง
+        item_block = (
+            f"### {title}\n"
+            f"{f'![{title}]({poster_url})' if poster_url else '[ไม่มีรูปภาพ]'}\n"
+            f"**รายละเอียด:** {item.get('synopsis') or item.get('synopsis_short') or 'N/A'}\n"
+            f"{themes_block}\n"
+            f"{links_section}"
+        )
+        prepared_items.append(item_block)
+
+    all_data_text = "\n\n---\n\n".join(prepared_items)
+
+    return (
+        f"คำถามจากผู้ใช้: {original_query}\n\n"
+        f"ข้อมูลที่ดึงมาได้:\n{all_data_text}\n\n"
+        "═══════════════════════════════════════\n"
+        "คำสั่งบังคับสำหรับลูน่า (ห้ามละเว้น):\n"
+        "═══════════════════════════════════════\n"
+        "1. ตอบเป็นภาษาไทยในบุคลิก 'ลูน่า' (น่ารัก, ร่าเริง, เป็นกันเอง)\n"
+        "2. ทุกเรื่องที่พูดถึง **ต้องมีส่วน 📌 แหล่งข้อมูล เสมอ** — ห้ามตัดออก\n"
+        "3. Copy URL จากส่วน '📌 แหล่งข้อมูล' ในข้อมูลที่ได้รับมาตรงๆ ห้ามแต่งเอง\n"
+        "4. ถ้ามีเพลงประกอบ ให้แสดง song list พร้อมลิงก์ YouTube ทุกเพลง\n"
+        "5. หากข้อมูลไม่ตรงกับคำถาม ให้ขอโทษอย่างสุภาพและแนะนำสิ่งที่ใกล้เคียงที่สุด"
+    )

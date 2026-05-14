@@ -10,7 +10,7 @@ tools/semantic_tool.py
 ใช้: retrieve_general() → FAISS top-10 → Claude rerank top-3
 """
 
-from app.rag.retrieval import retrieve_general
+from app.rag.retrieval import retrieve_kb
 
 # ───────────────────────────────────────────────
 # TOOL DEFINITION — ส่งให้ agent.py ลงทะเบียน
@@ -71,20 +71,20 @@ def run(query: str, top_k: int = 3) -> dict:
     top_k = min(top_k, 5)   # cap ที่ 5
 
     print(f"[semantic_tool] query='{query}', top_k={top_k}")
-    raw_results = retrieve_general(query, top_k=top_k)
+    raw_results = retrieve_kb(query, top_k=top_k)
 
     results = [
         {
             "rank":          i + 1,
-            "chunk_id":      r["chunk_id"],
-            "title_en":      r["title_en"],
-            "title":         r["title"],
-            "rating":        r["rating"],
-            "year":          r["year"],
-            "type":          r["type"],
-            "tags":          r["filter_meta"]["tags"],
-            "synopsis":      r["synopsis"],
-            "score":         round(r["score"], 4),
+            "chunk_id":      r.get("chunk_id", ""),
+            "title_en":      r.get("title_en", ""),
+            "title":         r.get("title", ""),
+            "rating":        r.get("rating", 0),
+            "year":          r.get("year"),
+            "type":          r.get("type", ""),
+            "tags":          r.get("filter_meta", {}).get("tags", []) if isinstance(r.get("filter_meta"), dict) else [],
+            "synopsis":      r.get("synopsis", ""),
+            "score":         round(r.get("score", 0), 4),
             "rerank_reason": r.get("rerank_reason", ""),
             "image_url":     r.get("image_url", ""),
             "mal_url":       r.get("mal_url", ""),

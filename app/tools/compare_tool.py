@@ -17,9 +17,10 @@ from difflib import SequenceMatcher
 
 import pandas as pd
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # ถอยจาก tools -> app
-DATA_PATH = os.path.join(BASE_DIR, "rag", "data", "prepared_anime.json")
+CURRENT_FILE = os.path.abspath(__file__)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_FILE)))
 
+DATA_PATH = os.path.join(PROJECT_ROOT, "data", "compare_meta.json")
 # ───────────────────────────────────────────────
 # TOOL DEFINITION
 # ───────────────────────────────────────────────
@@ -27,9 +28,7 @@ DATA_PATH = os.path.join(BASE_DIR, "rag", "data", "prepared_anime.json")
 TOOL_DEFINITION = {
     "name": "compare_anime",
     "description": (
-        "เปรียบเทียบ anime 2-4 ตัวแบบ side-by-side ในทุกมิติ "
-        "ใช้เมื่อ user ต้องการรู้ความแตกต่างระหว่าง anime หลายเรื่อง "
-        "เช่น 'Naruto vs Bleach' หรือ 'เปรียบเทียบ Ghibli movies'"
+        "เปรียบเทียบ anime 2-4 เรื่องแบบ side-by-side ทั้งด้านเนื้อเรื่อง ธีม เพลง และคะแนน"
     ),
     "input_schema": {
         "type": "object",
@@ -50,9 +49,7 @@ TOOL_DEFINITION = {
 # ───────────────────────────────────────────────
 # DATA LOADER
 # ───────────────────────────────────────────────
-
 _records: list[dict] | None = None
-
 def _get_records() -> list[dict]:
     global _records
     if _records is None:
@@ -60,11 +57,9 @@ def _get_records() -> list[dict]:
             _records = json.load(f)
     return _records
 
-
 # ───────────────────────────────────────────────
 # TITLE MATCHING
 # ───────────────────────────────────────────────
-
 def _find_anime(query: str) -> dict | None:
     """
     ค้นหา anime จาก title ด้วย fuzzy matching
@@ -78,110 +73,111 @@ def _find_anime(query: str) -> dict | None:
     best_match = None
 
     for r in records:
-        # รวมทุกชื่อที่เป็นไปได้เข้าด้วยกัน
+        # FIX: safe extraction กัน None
         candidates = [
-            r.get("title_en", "").lower(),
-            r.get("title", "").lower(),
-            r.get("title_ja", "").lower()
+            (r.get("main_title") or "").lower(),
+            (r.get("title_en") or "").lower(),
+            (r.get("title_ja") or "").lower()
         ]
-        # ลบค่าที่เป็น None หรือว่างออก
         candidates = [c for c in candidates if c]
 
-        # เพิ่ม title_ja ถ้ามี
-        if r.get("title_ja"):
-            candidates.append(r["title_ja"].lower())
-
         for candidate in candidates:
-            # exact match → คืนเลย
+            if not candidate:
+                continue
+
             if query_lower == candidate:
                 return r
 
-            # partial match — query อยู่ใน title
+            # Partial match
             if query_lower in candidate or candidate in query_lower:
-                score = 0.95
+                score = 0.90
             else:
-                # 3. Fuzzy Match (ใช้กรณีพิมพ์ผิดนิดหน่อย)
                 score = SequenceMatcher(None, query_lower, candidate).ratio()
 
             if score > best_score:
                 best_score = score
                 best_match = r
 
-    # threshold 0.6 — ต่ำกว่านี้ถือว่าไม่เจอ
     return best_match if best_score >= 0.6 else None
-
 
 # ───────────────────────────────────────────────
 # COMPARISON BUILDER
 # ───────────────────────────────────────────────
-
 def _build_comparison(records: list[dict]) -> dict:
     """
     สร้าง structured comparison จาก records หลายตัว
     จัดกลุ่มข้อมูลเป็นมิติต่างๆ เพื่อให้ agent สรุปง่าย
     """
-    titles = [r["title_en"] for r in records]
 
-    # ── Basic info ──
+    titles = [
+        (r.get("title_en") or r.get("main_title") or "Unknown")
+        for r in records
+    ]
+
+    # ── 1. ข้อมูลพื้นฐาน ──
     basic = {
         title: {
-            "year":   r["year"],
-            "season": r["filter_meta"]["season"],
-            "type":   r["type"],
-            "rating": r["rating"],
-            "studio": r["filter_meta"]["studio"],
+            "year": r.get("year"),
+            "season": r.get("season"),
+            "type": r.get("type"),
+            "rating": r.get("max_rating"),
+            "studio": r.get("animation_work"),
         }
         for title, r in zip(titles, records)
     }
 
-    # ── Themes & genres ──
-    themes = {
-        title: r["filter_meta"]["tags"]
-        for title, r in zip(titles, records)
-    }
-
-    # Tags ที่มีร่วมกัน vs ต่างกัน
-    all_tag_sets = [set(r["filter_meta"]["tags"]) for r in records]
-    shared_tags  = set.intersection(*all_tag_sets) if all_tag_sets else set()
-    unique_tags  = {
-        title: list(all_tag_sets[i] - shared_tags)
-        for i, title in enumerate(titles)
-    }
-
-    # ── Music ──
-    music = {
+    # ── 2. ทีมงานเบื้องหลัง ──
+    staff = {
         title: {
-            "composer":    r["filter_meta"]["music_style"],
-            "style":       r["filter_meta"]["music_style"],
-            "mood":        r["filter_meta"].get("music_mood_tags", []),
+            "director": r.get("direction"),
+            "music": r.get("music"),
+            "series_comp": r.get("series_composition"),
+            "original_work": r.get("original_work")
         }
         for title, r in zip(titles, records)
     }
 
-    # ── Synopsis ──
-    synopsis = {
-        title: r["synopsis"]
+    # ── 3. Themes & Tags ──
+    all_tag_sets = [
+        set(r.get("tags", []) or [])
+        for r in records
+    ]
+
+    shared_tags = set.intersection(*all_tag_sets) if all_tag_sets else set()
+
+    unique_tags = {
+        title: list(set(r.get("tags", []) or []) - shared_tags)
         for title, r in zip(titles, records)
     }
 
-    # ── Ratings ranked ──
+    # ── 4. นักพากย์ ──
+    cast = {
+        title: (r.get("cast") or [])[:5]
+        for title, r in zip(titles, records)
+    }
+
+    # ── 5. สรุปอันดับตาม Rating ──
     rating_rank = sorted(
-        [{"title": r["title_en"], "rating": r["rating"]} for r in records],
+        [
+            {
+                "title": (r.get("title_en") or r.get("main_title") or "Unknown"),
+                "rating": r.get("max_rating", 0)
+            }
+            for r in records
+        ],
         key=lambda x: x["rating"],
         reverse=True,
     )
 
     return {
-        "titles":       titles,
-        "basic":        basic,
-        "themes":       themes,
-        "shared_tags":  list(shared_tags),
-        "unique_tags":  unique_tags,
-        "music":        music,
-        "synopsis":     synopsis,
-        "rating_rank":  rating_rank,
+        "titles": titles,
+        "basic": basic,
+        "staff": staff,
+        "shared_tags": list(shared_tags),
+        "unique_tags": unique_tags,
+        "cast": cast,
+        "rating_rank": rating_rank,
     }
-
 
 # ───────────────────────────────────────────────
 # HANDLER
@@ -201,75 +197,90 @@ def run(titles: list[str]) -> dict:
       "records": [ ... ]      ← full records สำหรับ agent
     }
     """
-    print(f"[compare_tool] ค้นหา: {titles}")
+    print(f"[compare_tool] เปรียบเทียบ: {titles}")
 
     found_records = []
-    not_found     = []
+    not_found = []
 
     for title in titles:
         record = _find_anime(title)
         if record:
-            # กัน duplicate
-            if record["chunk_id"] not in [r["chunk_id"] for r in found_records]:
+            if record not in found_records:
                 found_records.append(record)
-            print(f"  ✓ '{title}' → {record['title_en']}")
         else:
             not_found.append(title)
-            print(f"  ✗ '{title}' → ไม่พบ")
 
     if len(found_records) < 2:
         return {
-            "tool":      "compare_anime",
-            "requested": titles,
-            "found":     [r["title_en"] for r in found_records],
-            "not_found": not_found,
-            "error":     f"พบ anime แค่ {len(found_records)} เรื่อง ต้องการอย่างน้อย 2 เรื่องเพื่อเปรียบเทียบ",
-            "comparison": None,
+            "tool": "compare_anime",
+            "error": f"พบข้อมูลเพียง {len(found_records)} เรื่อง (ต้องการ 2 เรื่องขึ้นไป)",
+            "found": [r.get("main_title") for r in found_records],
+            "not_found": not_found
         }
 
     comparison = _build_comparison(found_records)
 
     return {
-        "tool":       "compare_anime",
-        "requested":  titles,
-        "found":      [r["title_en"] for r in found_records],
-        "not_found":  not_found,
-        "comparison": comparison,
+        "tool": "compare_anime",
+        "requested": titles,
+        "found": comparison["titles"],
+        "not_found": not_found,
+        "comparison": comparison
     }
-
-
 # ───────────────────────────────────────────────
 # ENTRY POINT — ทดสอบ
 # ───────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # รายการทดสอบ
     tests = [
-        ["Naruto", "Bleach"],
-        ["Attack on Titan", "Fullmetal Alchemist Brotherhood"],
-        ["Spirited Away", "Princess Mononoke", "Howl's Moving Castle"],
+        ["Seikai no Monshou", "Ordian"],
+        ["Crest of the Stars", "Ginsoukikou Ordian"], # ทดสอบ Title EN/Alternate
+        ["Spirited Away", "Naruto"] # ทดสอบกรณีไม่พบข้อมูล (ถ้าไม่มีใน 500 records)
     ]
 
     for titles in tests:
-        print("\n" + "═" * 60)
+        print("\n" + "═" * 70)
         output = run(titles)
 
-        if output.get("error"):
-            print(f"Error: {output['error']}")
+        if "error" in output:
+            print(f"❌ Error: {output['error']}")
+            if output.get("not_found"):
+                print(f"   ไม่พบ: {output['not_found']}")
             continue
 
         comp = output["comparison"]
-        print(f"เปรียบเทียบ: {' vs '.join(comp['titles'])}")
-        print()
+        print(f"📊 เปรียบเทียบ: {' vs '.join(comp['titles'])}")
+        print("═" * 70)
 
-        print("Basic info:")
+        # 1. ข้อมูลพื้นฐาน
+        print("\n[ Basic Info ]")
         for title, info in comp["basic"].items():
-            print(f"  {title}: {info['year']} | ★{info['rating']} | {info['studio']}")
+            print(f"  • {title:25} | {info['year']} | ★{info['rating'] or 'N/A':<4} | {info['studio']}")
 
-        print(f"\nShared tags: {comp['shared_tags']}")
-        print("Unique tags:")
+        # 2. ทีมงาน (ข้อมูลใหม่จาก compare_meta.json)
+        print("\n[ Production Staff ]")
+        for title, staff in comp["staff"].items():
+            print(f"  • {title}:")
+            print(f"    - Director: {staff['director']}")
+            print(f"    - Music:    {staff['music']}")
+            print(f"    - Original: {staff['original_work']}")
+
+        # 3. นักพากย์ (ข้อมูลใหม่)
+        print("\n[ Top Cast ]")
+        for title, cast_list in comp["cast"].items():
+            cast_str = ", ".join(cast_list) if cast_list else "N/A"
+            print(f"  • {title}: {cast_str}")
+
+        # 4. แท็กและความเกี่ยวข้อง
+        print(f"\n[ Shared Tags ]: {', '.join(comp['shared_tags']) if comp['shared_tags'] else '-'}")
+        print("[ Unique Traits ]:")
         for title, tags in comp["unique_tags"].items():
-            print(f"  {title}: {tags}")
+            print(f"  • {title}: {', '.join(tags[:5])}...")
 
-        print("\nRating rank:")
-        for r in comp["rating_rank"]:
-            print(f"  {r['rating']} → {r['title']}")
+        # 5. สรุปอันดับ
+        print("\n[ Rating Rank ]")
+        for i, r in enumerate(comp["rating_rank"], 1):
+            print(f"  {i}. {r['rating']} ★ -> {r['title']}")
+
+        print("\n" + "─" * 70)

@@ -138,34 +138,36 @@ def _parse_json_safe(raw: str) -> dict[str, Any]:
 
 def _json_to_action_plan(data: dict[str, Any]) -> ActionPlan:
     entities_raw = data.get("entities", {})
-    
-    #  metadata fields ที่มีใน JSON 
+
+    raw_title = entities_raw.get("anime_title")
+    anime_titles = [raw_title] if isinstance(raw_title, str) else raw_title
+
     entities = ExtractedEntities(
-        tags        = entities_raw.get("tags", entities_raw.get("genre", [])), 
+        anime_title = anime_titles,
+        tags        = entities_raw.get("tags", []), 
         char_tags   = entities_raw.get("char_tags", []),
         studio      = entities_raw.get("studio"),
         music_style = entities_raw.get("music_style"),
-        year        = int(entities_raw.get("year")) if entities_raw.get("year") else None,
-        rating      = float(entities_raw.get("rating")) if entities_raw.get("rating") else None,
-        type        = entities_raw.get("type"), # TV, Movie, OVA
+        year        = entities_raw.get("year"),
+        rating      = entities_raw.get("rating"),
+        type        = entities_raw.get("type"), 
     )
 
-    raw_tool_val = data.get("selected_tool", "semantic_tools")
-    
-    try:
-        # พยายามสร้างจาก Enum ตรงๆ ก่อน
-        selected_tool = ToolName(raw_tool_val)
-    except ValueError:
-        # ถ้า LLM พ่นชื่อแปลกๆ มา ให้ Map กลับมาที่ RECOMMEND_TOOL (semantic_tools)
-        if any(x in raw_tool_val.lower() for x in ["semantic", "recommend", "search"]):
-            selected_tool = ToolName.RECOMMEND_TOOL
-        else:
-            selected_tool = ToolName.RECOMMEND_TOOL # Default fallback
+    # การ Map ToolName ให้ตรงกับ Enum ที่เรานิยามไว้
+    raw_tool_val = str(data.get("selected_tool", "")).lower()
+    if any(x in raw_tool_val for x in ["music", "song", "ost"]):
+        selected_tool = ToolName.MUSIC_TOOL
+    elif any(x in raw_tool_val for x in ["compare", "vs"]):
+        selected_tool = ToolName.COMPARE_TOOL
+    elif any(x in raw_tool_val for x in ["filter", "metadata"]):
+        selected_tool = ToolName.FILTER_TOOL
+    else:
+        selected_tool = ToolName.RECOMMEND_TOOL # Default
 
     return ActionPlan(
         intent             = Intent(data.get("intent", "recommend")),
         entities           = entities,
-        selected_tool      = selected_tool,
+        selected_tool=ToolName(data.get("selected_tool", "none")),
         retrieval_strategy = RetrievalStrategy(data.get("retrieval_strategy", "semantic")),
         rewritten_query    = data.get("rewritten_query", ""),
         reasoning          = data.get("reasoning", ""),
@@ -228,8 +230,8 @@ class Planner:
         if "no results found" in context.lower() or "not found" in context.lower():
             return ActionPlan(
                 intent=Intent.RECOMMEND,
-                selected_tool=ToolName.RECOMMEND_TOOL, # บังคับใช้ General Search แทน
-                retrieval_strategy=RetrievalStrategy.SEMANTIC,
+                selected_tool=ToolName.RECOMMEND_TOOL,
+                retrieval_strategy=RetrievalStrategy.SEMANTIC,  # Use the enum directly
                 rewritten_query=query,
                 reasoning="Self-Correction: Tool ก่อนหน้าไม่พบข้อมูล จึงลองใช้ Semantic Search ทั่วไปแทน",
                 confidence=0.9
@@ -237,13 +239,17 @@ class Planner:
 
         # --- [Rule-based: Music] ---
         if any(k in q_lower for k in ["เพลง", "music", "ost", "soundtrack"]):
-            # แก้ไข: เปลี่ยนไปใช้ SEARCH_MUSIC เพื่อให้ Controller เรียกใช้ music.faiss ได้ถูกต้อง
+            # เช็คว่าเป็นการ "ขอลิงก์/ขอฟัง" หรือแค่ "ถามข้อมูลเพลง"
+            is_asking_for_link = any(k in q_lower for k in ["ขอฟัง", "ขอลิงก์", "เปิดเพลง", "ฟังเพลง", "ขอลิ้ง", "link"])
+            
             return ActionPlan(
                 intent=Intent.RECOMMEND,
                 selected_tool=ToolName.MUSIC_TOOL, 
-                retrieval_strategy=RetrievalStrategy.SEMANTIC,
+                retrieval_strategy=RetrievalStrategy.HYBRID, # ใช้ Hybrid เพราะมักจะมีชื่อเรื่อง
                 rewritten_query=query,
-                reasoning="Rule-based: ตรวจพบคีย์เวิร์ดเกี่ยวกับเพลง",
+                # ส่ง flag ไปใน reasoning หรือจะเพิ่ม field ใน ActionPlan ก็ได้
+                # เพื่อให้ Controller รู้ว่าต้องเปิด include_external
+                reasoning=f"Rule-based: Music Detection | RequestLink: {is_asking_for_link}",
                 confidence=1.0
             )
 

@@ -20,9 +20,9 @@ class Intent(str, Enum):
     UNKNOWN      = "unknown"
 
 class ToolName(str, Enum):
-    RECOMMEND_TOOL = "semantic_tools"  
-    MUSIC_TOOL     = "music_lookup"      
-    FILTER_TOOL    = "filter_tool"    
+    RECOMMEND_TOOL = "recommend_tool" 
+    MUSIC_TOOL     = "music_tool"     
+    FILTER_TOOL    = "filter_tool"
     COMPARE_TOOL   = "compare_tool"
     NONE           = "none"
 
@@ -53,7 +53,7 @@ class ExtractedEntities:
     music_style: Optional[str] = None
     rating: Optional[float] = None                     
     type: Optional[str] = None                         
-    anime_title: Optional[str | list[str]] = None
+    anime_title: Optional[List[str]] = None #
 
 @dataclass
 class ActionPlan:

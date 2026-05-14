@@ -1,6 +1,10 @@
-sentence-transformers>=2.7.0
-faiss-cpu>=1.8.0
-pandas>=2.0.0
-numpy>=1.26.0
-anthropic>=0.40.0
-spotipy
+faiss==1.5.3
+numpy==2.4.4
+openai==2.36.0
+pandas==3.0.3
+python-dotenv==1.2.2
+sentence-transformers==3.0.1
+transformers==4.41.2
+ONNX
+requests>=2.31.0
+google-api-python-client
