@@ -1,5 +1,7 @@
 .env
 .venv/
+node_modules/
+app/api/node_modules/
 __pycache__/
 *.pyc
 data/yt_cache/
