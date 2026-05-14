@@ -225,7 +225,8 @@ def run(titles: list[str]) -> dict:
         "requested": titles,
         "found": comparison["titles"],
         "not_found": not_found,
-        "comparison": comparison
+        "comparison": comparison,
+        "records": found_records,
     }
 # ───────────────────────────────────────────────
 # ENTRY POINT — ทดสอบ

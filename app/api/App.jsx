@@ -10,6 +10,7 @@ export default function App() {
   const [agentAnswer, setAgentAnswer] = useState('')
   const [results, setResults] = useState([])
   const [traceSteps, setTraceSteps] = useState([])
+  const [playerTrack, setPlayerTrack] = useState(null)
   const [showTraceDetails, setShowTraceDetails] = useState(false)
   const [isTraceAnimating, setIsTraceAnimating] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -38,11 +39,101 @@ export default function App() {
     setLogs((prev) => [entry, ...prev])
   }
 
+  const formatDuration = (durationMs) => {
+    if (durationMs === undefined || durationMs === null) {
+      return '-'
+    }
+
+    if (durationMs < 1000) {
+      return `${durationMs} ms`
+    }
+
+    return `${(durationMs / 1000).toFixed(2)} s`
+  }
+
+  const formatTraceBreakdown = (breakdown = {}) => {
+    const labels = {
+      planning_ms: 'plan',
+      tool_ms: 'tool',
+      observe_ms: 'observe',
+      generation_ms: 'generate',
+    }
+
+    return Object.entries(breakdown)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => `${labels[key] || key}: ${formatDuration(value)}`)
+      .join(' · ')
+  }
+
   const handleChatInputChange = (event) => {
     setChatInput(event.target.value)
   }
 
-  const ragEndpoint = import.meta.env.VITE_RAG_ENDPOINT
+  const ragEndpoint = import.meta.env.VITE_RAG_ENDPOINT || 'http://127.0.0.1:8000/chat'
+  const streamEndpoint = ragEndpoint.replace(/\/chat$/, '/chat/stream')
+
+  const mapApiResults = (apiResults = []) =>
+    apiResults.map((item) => ({
+      title: item.title,
+      match: item.match,
+      href: item.url || item.href,
+      playableUrl: item.playable_url || item.playableUrl || '',
+      imageUrl: item.cover_url || item.coverUrl || item.image_url || item.imageUrl || '',
+      reason: item.reason || '',
+    }))
+
+  const getYoutubeEmbedUrl = (url) => {
+    if (!url) {
+      return ''
+    }
+
+    try {
+      const parsed = new URL(url)
+      const hostname = parsed.hostname.replace(/^www\./, '')
+      const playlistId = parsed.searchParams.get('list')
+
+      if (hostname === 'youtube.com' || hostname === 'music.youtube.com') {
+        const videoId = parsed.searchParams.get('v')
+
+        if (videoId) {
+          return `https://www.youtube.com/embed/${videoId}?autoplay=1`
+        }
+
+        if (playlistId) {
+          return `https://www.youtube.com/embed/videoseries?list=${playlistId}&autoplay=1`
+        }
+
+        const embedMatch = parsed.pathname.match(/^\/embed\/([^/?]+)/)
+        if (embedMatch) {
+          return `https://www.youtube.com/embed/${embedMatch[1]}?autoplay=1`
+        }
+      }
+
+      if (hostname === 'youtu.be') {
+        const videoId = parsed.pathname.split('/').filter(Boolean)[0]
+        return videoId ? `https://www.youtube.com/embed/${videoId}?autoplay=1` : ''
+      }
+    } catch (error) {
+      return ''
+    }
+
+    return ''
+  }
+
+  const handlePlayTrack = (item) => {
+    const playableUrl = item.playableUrl
+    const embedUrl = getYoutubeEmbedUrl(playableUrl)
+
+    if (!embedUrl) {
+      return
+    }
+
+    setPlayerTrack({
+      title: item.title,
+      href: playableUrl,
+      embedUrl,
+    })
+  }
 
   const animateTraceSteps = (steps) => {
     setTraceSteps([])
@@ -74,59 +165,101 @@ export default function App() {
       let nextResults = []
 
       if (ragEndpoint) {
-        const response = await fetch(ragEndpoint, {
+        setTraceSteps([])
+        setAgentAnswer('')
+        setResults([])
+        setIsTraceAnimating(true)
+
+        const response = await fetch(streamEndpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: trimmed, topK: 4 }),
+          body: JSON.stringify({ query: trimmed, topK: 3 }),
         })
 
         if (!response.ok) {
-          throw new Error(`RAG request failed (${response.status})`)
+          throw new Error(`RAG stream request failed (${response.status})`)
         }
 
-        const data = await response.json()
-        
-        setAgentAnswer(data.answer || '')
-        animateTraceSteps(data.trace || [])
-
-        if (data.logs) {
-          const backendLogs = data.logs.map((log, index) => ({
-            id: `${Date.now()}-${index}`,
-            time: new Date().toLocaleString(),
-            type: log.type || 'agent',
-            message: log.message || '',
-          }))
-
-          setLogs((prev) => [...backendLogs.reverse(), ...prev])
+        const reader = response.body?.getReader()
+        if (!reader) {
+          throw new Error('Streaming is not supported by this browser')
         }
-        nextResults = (data.results || []).map((item) => ({
-        title: item.title,
-        match: item.match,
-        href: item.url || item.href,
-        imageUrl: item.image_url || item.imageUrl || '',
-        reason: item.reason || '',
-      }))
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) {
+            break
+          }
+
+          buffer += decoder.decode(value, { stream: true })
+          const events = buffer.split('\n\n')
+          buffer = events.pop() || ''
+
+          for (const rawEvent of events) {
+            const lines = rawEvent.split('\n')
+            const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message'
+            const dataLine = lines.find((line) => line.startsWith('data:'))?.slice(5).trim()
+            if (!dataLine || eventName === 'ping') {
+              continue
+            }
+
+            const payload = JSON.parse(dataLine)
+
+            if (eventName === 'trace') {
+              setTraceSteps((prev) => [...prev, payload])
+            }
+
+            if (eventName === 'final') {
+              setAgentAnswer(payload.answer || '')
+              nextResults = mapApiResults(payload.results || [])
+              setResults(nextResults)
+              setTraceSteps(payload.trace || [])
+
+              if (payload.logs) {
+                const backendLogs = payload.logs.map((log, index) => ({
+                  id: `${Date.now()}-${index}`,
+                  time: new Date().toLocaleString(),
+                  type: log.type || 'agent',
+                  message: log.message || '',
+                }))
+
+                setLogs((prev) => [...backendLogs.reverse(), ...prev])
+              }
+            }
+
+            if (eventName === 'error') {
+              throw new Error(payload.message || 'RAG stream failed')
+            }
+          }
+        }
       } else {
         nextResults = [
           {
             title: 'Violet Evergarden OST',
             match: 92,
             href: 'https://www.youtube.com/results?search_query=Violet+Evergarden+OST',
+            playableUrl: 'https://www.youtube.com/results?search_query=Violet+Evergarden+OST',
           },
           {
             title: 'Angel Beats! OST',
             match: 92,
             href: 'https://www.youtube.com/results?search_query=Angel+Beats+OST',
+            playableUrl: 'https://www.youtube.com/results?search_query=Angel+Beats+OST',
           },
           {
             title: 'Garden of Words OST',
             match: 92,
             href: 'https://www.youtube.com/results?search_query=Garden+of+Words+OST',
+            playableUrl: 'https://www.youtube.com/results?search_query=Garden+of+Words+OST',
           },
           {
             title: 'Clannad OST',
             match: 92,
             href: 'https://www.youtube.com/results?search_query=Clannad+OST',
+            playableUrl: 'https://www.youtube.com/results?search_query=Clannad+OST',
           },
         ]
       }
@@ -139,6 +272,7 @@ export default function App() {
       addLog('error', error.message || 'RAG request failed')
     } finally {
       setIsLoading(false)
+      setIsTraceAnimating(false)
     }
   }
 
@@ -150,8 +284,8 @@ export default function App() {
             AI
           </div>
           <div className="min-w-0">
-            <h1 className="text-base font-bold leading-tight break-words">
-              Anime_OST_Scout_Agent
+            <h1 className="text-base font-bold leading-tight">
+              Luna Agent
             </h1>
             <p className="text-xs text-gray-400">
               AI Agent for Soundtrack Discovery
@@ -160,7 +294,7 @@ export default function App() {
         </div>
 
         <div className="space-y-3">
-          {['Home', 'AI Chat', 'Explore OST', 'My Library'].map((item) => (
+          {['Home', 'AI Chat'].map((item) => (
             <button
               key={item}
               type="button"
@@ -212,7 +346,7 @@ export default function App() {
               {agentAnswer ? (
                 <div className="mb-6 rounded-2xl border border-violet-500/30 bg-violet-500/10 p-5">
                   <div className="text-sm font-semibold text-violet-200 mb-2">
-                    Scout Agent Response
+                    Luna Response
                   </div>
                   <p className="text-sm leading-7 text-gray-200 whitespace-pre-line">
                     {agentAnswer}
@@ -248,24 +382,35 @@ export default function App() {
                         ) : null}
                       </div>
                       <div className="p-4">
-                        <h3>{item.title}</h3>
-                        <p className="text-emerald-400 text-sm mt-2">
-                          {item.match}% match
-                        </p>
+                        <a
+                          href={item.href || undefined}
+                          target={item.href ? '_blank' : undefined}
+                          rel={item.href ? 'noreferrer' : undefined}
+                          onClick={(event) => {
+                            if (!item.href) {
+                              event.preventDefault()
+                            }
+                          }}
+                          className={`block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${item.href ? 'hover:text-violet-200 cursor-pointer' : 'cursor-default'}`}
+                        >
+                          <h3>{item.title}</h3>
+                          <p className="text-emerald-400 text-sm mt-2">
+                            {item.match}% match
+                          </p>
+                        </a>
 
                         {item.reason ? (
                           <p className="text-xs text-gray-400 mt-2 line-clamp-3">
                             {item.reason}
                           </p>
                         ) : null}
-                        <a
-                          href={item.href}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center mt-3 text-sm text-violet-300 hover:text-violet-200"
+                        <button
+                          type="button"
+                          onClick={() => handlePlayTrack(item)}
+                          className={`${item.playableUrl ? 'inline-flex' : 'hidden'} items-center mt-3 text-sm text-violet-300 hover:text-violet-200`}
                         >
                           ฟังตัวอย่าง
-                        </a>
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -354,7 +499,7 @@ export default function App() {
                     {index + 1}
                   </div>
 
-                  <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 flex items-center justify-between">
+                  <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 flex items-center justify-between gap-4">
                     <div>
                       <div className="text-sm font-semibold text-gray-100">
                         {step.step}
@@ -365,8 +510,11 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="text-xs text-gray-400">
-                      {step.status}
+                    <div className="flex flex-col items-end gap-1 text-xs text-gray-400">
+                      <span>{step.status}</span>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-violet-200">
+                        {formatDuration(step.duration_ms)}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -410,8 +558,9 @@ export default function App() {
                         <div className="text-sm font-semibold text-violet-200">
                           Step {index + 1}: {step.step}
                         </div>
-                        <div className="text-xs text-gray-400">
-                          {step.status}
+                        <div className="flex items-center gap-2 text-xs text-gray-400">
+                          <span>{formatDuration(step.duration_ms)}</span>
+                          <span>{step.status}</span>
                         </div>
                       </div>
 
@@ -427,6 +576,14 @@ export default function App() {
                         <div>
                           <span className="text-gray-500">Top Score:</span>{' '}
                           {step.top_score ?? '-'}
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Duration:</span>{' '}
+                          {formatDuration(step.duration_ms)}
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Breakdown:</span>{' '}
+                          {formatTraceBreakdown(step.duration_breakdown) || '-'}
                         </div>
                       </div>
                     </div>
@@ -479,12 +636,34 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="hidden lg:block w-[320px] h-[260px] rounded-3xl border border-white/10 bg-gradient-to-br from-violet-500/20 via-transparent to-fuchsia-500/20 relative">
-                  <div className="absolute inset-0 rounded-3xl bg-gradient-to-t from-[#0A1023] via-transparent to-transparent" />
-                  <div className="absolute -right-10 -top-10 w-52 h-52 rounded-full bg-violet-500/30 blur-3xl" />
-                  <div className="absolute bottom-6 right-6 w-16 h-16 rounded-full border border-white/20 bg-black/40 flex items-center justify-center">
-                    ♪
-                  </div>
+                <div className="hidden lg:block w-[320px] h-[260px] rounded-3xl border border-white/10 bg-gradient-to-br from-violet-500/20 via-transparent to-fuchsia-500/20 relative overflow-hidden">
+                  {playerTrack?.embedUrl ? (
+                    <iframe
+                      title={`Now playing ${playerTrack.title}`}
+                      src={playerTrack.embedUrl}
+                      className="absolute inset-0 h-full w-full"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <>
+                      <div className="absolute inset-0 rounded-3xl bg-gradient-to-t from-[#0A1023] via-transparent to-transparent" />
+                      <div className="absolute -right-10 -top-10 w-52 h-52 rounded-full bg-violet-500/30 blur-3xl" />
+                      <div className="absolute inset-x-6 bottom-6 flex items-center gap-3">
+                        <div className="w-16 h-16 rounded-full border border-white/20 bg-black/40 flex items-center justify-center">
+                          ♪
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-white truncate">
+                            {playerTrack?.title || 'Select an OST'}
+                          </div>
+                          <div className="text-xs text-gray-300">
+                            {playerTrack ? 'ไม่มีลิงก์ YouTube แบบ embed' : 'กด play จากการ์ดด้านล่าง'}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -512,7 +691,7 @@ export default function App() {
                     AI
                   </div>
                   <div className="flex-1">
-                    <div className="text-sm font-semibold text-gray-200 mb-1">Scout Agent</div>
+                    <div className="text-sm font-semibold text-gray-200 mb-1">Luna</div>
                     <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm text-gray-300 whitespace-pre-line">
                       {agentAnswer || 'AI Agent พร้อมช่วยค้นหา Anime OST'}
                     </div>
@@ -537,22 +716,33 @@ export default function App() {
                             }}
                           />
                         ) : null}
-                        <a
-                          href={item.href}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-black/50 border border-white/20 flex items-center justify-center"
+                        <button
+                          type="button"
+                          onClick={() => handlePlayTrack(item)}
+                          className={`${item.playableUrl ? 'flex' : 'hidden'} absolute bottom-3 right-3 w-9 h-9 rounded-full bg-black/50 border border-white/20 items-center justify-center`}
                         >
                           ►
-                        </a>
+                        </button>
                       </div>
                       <div className="p-3">
-                        <div className="text-xs font-semibold leading-snug text-gray-100">
-                          {item.title}
-                        </div>
-                        <div className="text-xs text-emerald-400 mt-2">
-                          {item.match}% match
-                        </div>
+                        <a
+                          href={item.href || undefined}
+                          target={item.href ? '_blank' : undefined}
+                          rel={item.href ? 'noreferrer' : undefined}
+                          onClick={(event) => {
+                            if (!item.href) {
+                              event.preventDefault()
+                            }
+                          }}
+                          className={`block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${item.href ? 'cursor-pointer' : 'cursor-default'}`}
+                        >
+                          <div className="text-xs font-semibold leading-snug text-gray-100 hover:text-violet-200">
+                            {item.title}
+                          </div>
+                          <div className="text-xs text-emerald-400 mt-2 hover:text-emerald-300">
+                            {item.match}% match
+                          </div>
+                        </a>
                       </div>
                     </div>
                   ))}
@@ -611,7 +801,7 @@ export default function App() {
                       {index + 1}
                     </div>
 
-                    <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 flex items-center justify-between">
+                    <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 flex items-center justify-between gap-4">
                       <div>
                         <div className="text-sm font-semibold text-gray-100">
                           {step.step}
@@ -622,8 +812,11 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="text-xs text-gray-400">
-                        {step.status}
+                      <div className="flex flex-col items-end gap-1 text-xs text-gray-400">
+                        <span>{step.status}</span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-violet-200">
+                          {formatDuration(step.duration_ms)}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -667,8 +860,9 @@ export default function App() {
                         <div className="text-sm font-semibold text-violet-200">
                           Step {index + 1}: {step.step}
                         </div>
-                        <div className="text-xs text-gray-400">
-                          {step.status}
+                        <div className="flex items-center gap-2 text-xs text-gray-400">
+                          <span>{formatDuration(step.duration_ms)}</span>
+                          <span>{step.status}</span>
                         </div>
                       </div>
 
@@ -684,6 +878,14 @@ export default function App() {
                         <div>
                           <span className="text-gray-500">Top Score:</span>{' '}
                           {step.top_score ?? '-'}
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Duration:</span>{' '}
+                          {formatDuration(step.duration_ms)}
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Breakdown:</span>{' '}
+                          {formatTraceBreakdown(step.duration_breakdown) || '-'}
                         </div>
                       </div>
                     </div>

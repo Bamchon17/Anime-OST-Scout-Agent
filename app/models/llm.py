@@ -18,7 +18,13 @@ class LLMService:
             base_url=self.base_url
         )
 
-    async def chat(self, system_prompt: str, user_prompt: str, temperature:float = 0.4):
+    async def chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.4,
+        max_tokens: int | None = None,
+    ):
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -27,6 +33,7 @@ class LLMService:
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=temperature,    
+                max_tokens=max_tokens,
             )
             return response.choices[0].message.content
         except Exception as e:

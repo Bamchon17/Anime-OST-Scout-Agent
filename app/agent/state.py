@@ -2,10 +2,11 @@
 from __future__ import annotations
 import uuid
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,13 @@ class ExtractedEntities:
     char_tags: list[str] = field(default_factory=list)
     studio: Optional[str] = None
     year: Optional[int] = None
+    year_from: Optional[int] = None
+    year_to: Optional[int] = None
     season: Optional[str] = None                     
     music_style: Optional[str] = None
-    rating: Optional[float] = None                     
+    rating: Optional[float] = None
+    rating_min: Optional[float] = None
+    rating_max: Optional[float] = None
     type: Optional[str] = None                         
     anime_title: Optional[List[str]] = None #
 
@@ -75,6 +80,10 @@ class Observation:
     top_score: float = 0.0
     retrieved_data: List[dict] = field(default_factory=list) # เก็บรายการอนิเมะที่เจอ
     feedback: str = "" # บอกเหตุผลว่าทำไมถึงต้อง Retry หรือ Failed
+    planning_duration_ms: int = 0
+    action_duration_ms: int = 0
+    observe_duration_ms: int = 0
+    duration_ms: int = 0
 
 # ─────────────────────────────────────────────
 #  Main Agent State
@@ -93,16 +102,28 @@ class AgentState:
     
     # ระบบบันทึก Loop (สำคัญสำหรับ Self-Correction & Log)
     loop_history: list[dict] = field(default_factory=list)
+    event_log: list[dict] = field(default_factory=list)
+    event_callback: Optional[Callable[[dict], None]] = None
     loop_count: int = 0
     max_loops: int = 3
+    started_at: float = field(default_factory=time.perf_counter)
     
     final_answer: Optional[str] = None
+    final_response_duration_ms: int = 0
 
     def log_step(self, message: str):
         """Helper สำหรับแสดงการทำงานหน้าจอ (Observability)"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         print(f"[{timestamp}]  {message}")
         logger.info(message)
+        event = {
+            "timestamp": timestamp,
+            "elapsed_ms": max(0, round((time.perf_counter() - self.started_at) * 1000)),
+            "message": message,
+        }
+        self.event_log.append(event)
+        if self.event_callback:
+            self.event_callback(event)
 
     def record_result(self, plan: ActionPlan, observation: Observation):
         """บันทึกผลลัพธ์การทำงานในรอบนั้นๆ"""

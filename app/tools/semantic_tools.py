@@ -88,6 +88,7 @@ def run(query: str, top_k: int = 3) -> dict:
             "rerank_reason": r.get("rerank_reason", ""),
             "image_url":     r.get("image_url", ""),
             "mal_url":       r.get("mal_url", ""),
+            "resources":     r.get("resources", {}),
         }
         for i, r in enumerate(raw_results)
     ]

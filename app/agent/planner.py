@@ -35,6 +35,90 @@ from app.agent.state import (
 logger = logging.getLogger(__name__)
 
 
+def _is_out_of_domain(query: str) -> bool:
+    q_lower = query.lower()
+
+    anime_terms = [
+        "anime",
+        "manga",
+        "ost",
+        "soundtrack",
+        "naruto",
+        "one piece",
+        "bleach",
+        "cowboy bebop",
+        "อนิเมะ",
+        "มังงะ",
+        "เพลง",
+        "เพลงประกอบ",
+    ]
+    strong_tech_terms = [
+        "iphone",
+        "ipad",
+        "samsung",
+        "galaxy s",
+        "s24",
+        "s23",
+        "s25",
+        "smartphone",
+        "android",
+        "snapdragon",
+        "exynos",
+        "pro max",
+        "มือถือ",
+        "โทรศัพท์",
+        "กล้อง",
+        "แบต",
+    ]
+
+    return any(term in q_lower for term in strong_tech_terms) and not any(
+        term in q_lower for term in anime_terms
+    )
+
+
+def _extract_metadata_filters(query: str) -> ExtractedEntities:
+    q_lower = query.lower()
+
+    season = None
+    for candidate in ("spring", "summer", "fall", "autumn", "winter"):
+        if candidate in q_lower:
+            season = "fall" if candidate == "autumn" else candidate
+            break
+
+    year = None
+    year_match = re.search(r"\b(19|20)\d{2}\b", query)
+    if year_match:
+        year = int(year_match.group())
+
+    rating_min = None
+    rating_patterns = [
+        r"(?:rating|score|rate|คะแนน|เรตติ้ง|เรทติ้ง)\s*(?:>=|>|มากกว่า|เกิน|ไม่ต่ำกว่า|อย่างน้อย)?\s*(\d+(?:\.\d+)?)",
+        r"(?:>=|>|มากกว่า|เกิน|ไม่ต่ำกว่า|อย่างน้อย)\s*(\d+(?:\.\d+)?)",
+        r"(\d+(?:\.\d+)?)\s*(?:ขึ้นไป|บวก)",
+    ]
+    for pattern in rating_patterns:
+        match = re.search(pattern, q_lower)
+        if match:
+            rating_min = float(match.group(1))
+            break
+
+    anime_type = None
+    if re.search(r"\btv\b|tv series", q_lower):
+        anime_type = "TV"
+    elif re.search(r"\bmovie\b|ภาพยนตร์", q_lower):
+        anime_type = "Movie"
+    elif re.search(r"\bova\b", q_lower):
+        anime_type = "OVA"
+
+    return ExtractedEntities(
+        year=year,
+        season=season,
+        rating=rating_min,
+        rating_min=rating_min,
+        type=anime_type,
+    )
+
+
 # ─────────────────────────────────────────────
 #  LLM Interface (Abstract Base)
 # ─────────────────────────────────────────────
@@ -149,7 +233,12 @@ def _json_to_action_plan(data: dict[str, Any]) -> ActionPlan:
         studio      = entities_raw.get("studio"),
         music_style = entities_raw.get("music_style"),
         year        = entities_raw.get("year"),
+        year_from   = entities_raw.get("year_from"),
+        year_to     = entities_raw.get("year_to"),
+        season      = entities_raw.get("season"),
         rating      = entities_raw.get("rating"),
+        rating_min  = entities_raw.get("rating_min") or entities_raw.get("rating"),
+        rating_max  = entities_raw.get("rating_max"),
         type        = entities_raw.get("type"), 
     )
 
@@ -167,7 +256,7 @@ def _json_to_action_plan(data: dict[str, Any]) -> ActionPlan:
     return ActionPlan(
         intent             = Intent(data.get("intent", "recommend")),
         entities           = entities,
-        selected_tool=ToolName(data.get("selected_tool", "none")),
+        selected_tool=selected_tool,
         retrieval_strategy = RetrievalStrategy(data.get("retrieval_strategy", "semantic")),
         rewritten_query    = data.get("rewritten_query", ""),
         reasoning          = data.get("reasoning", ""),
@@ -226,6 +315,17 @@ class Planner:
         ตรวจจับ Intent เบื้องต้น และจัดการ Self-Correction จากประวัติใน context
         """
         q_lower = query.lower()
+
+        if _is_out_of_domain(query):
+            return ActionPlan(
+                intent=Intent.UNKNOWN,
+                selected_tool=ToolName.NONE,
+                retrieval_strategy=RetrievalStrategy.SKIP,
+                rewritten_query=query,
+                reasoning="Out-of-domain: technology/product comparison is outside the anime and OST scope",
+                confidence=1.0,
+            )
+
         # ถ้าใน context มีบอกว่า "Tool ก่อนหน้าหาไม่เจอ" ให้เปลี่ยนไปใช้ Semantic Search ทันที
         if "no results found" in context.lower() or "not found" in context.lower():
             return ActionPlan(
@@ -245,7 +345,7 @@ class Planner:
             return ActionPlan(
                 intent=Intent.RECOMMEND,
                 selected_tool=ToolName.MUSIC_TOOL, 
-                retrieval_strategy=RetrievalStrategy.HYBRID, # ใช้ Hybrid เพราะมักจะมีชื่อเรื่อง
+                retrieval_strategy=RetrievalStrategy.HYBRID if is_asking_for_link else RetrievalStrategy.SEMANTIC,
                 rewritten_query=query,
                 # ส่ง flag ไปใน reasoning หรือจะเพิ่ม field ใน ActionPlan ก็ได้
                 # เพื่อให้ Controller รู้ว่าต้องเปิด include_external
@@ -255,6 +355,19 @@ class Planner:
 
         # --- [Rule-based: Comparison] ---
         if any(k in q_lower for k in ["เทียบ", "ต่างกัน", "vs", "better than", "สูงกว่า", "ยาวกว่า"]):
+            english_names = re.findall(r'[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*', query)
+            if len(english_names) >= 2:
+                clean_titles = [name.strip() for name in english_names]
+                return ActionPlan(
+                    intent=Intent.COMPARE,
+                    selected_tool=ToolName.COMPARE_TOOL,
+                    retrieval_strategy=RetrievalStrategy.HYBRID,
+                    rewritten_query=query,
+                    entities=ExtractedEntities(anime_title=clean_titles),
+                    reasoning=f"Extracted explicit English titles {clean_titles} for side-by-side comparison",
+                    confidence=1.0
+                )
+
             # 1. ลบคำเชื่อมที่ไม่จำเป็นออกเพื่อให้เหลือแต่ชื่อเรื่อง
             temp_q = query
             stop_words = ["เปรียบเทียบ", "ระหว่าง", "เรตติ้งของ", "เรื่องไหน", "ดีกว่า", "สูงกว่า", "กัน", "ยาวกว่า", "อนิเมะ"]
@@ -290,19 +403,27 @@ class Planner:
 
         # --- [Rule-based: Specific Filtering] ---
         # ดักจับ ปี (4 หลัก) หรือ เรตติ้ง
-        year_match = re.search(r"\b(19|20)\d{2}\b", query)
-        if year_match or "เรตติ้ง" in q_lower:
-            # สกัดปีออกมาเพื่อส่งให้ Filter Tool ทำงานได้จริง
-            detected_year = int(year_match.group()) if year_match else None
-            
+        filters = _extract_metadata_filters(query)
+        has_metadata_filter = any(
+            value is not None and value != []
+            for value in [
+                filters.year,
+                filters.season,
+                filters.rating_min,
+                filters.type,
+                filters.studio,
+                filters.tags,
+            ]
+        )
+        if has_metadata_filter:
             return ActionPlan(
                 intent=Intent.FILTER,
                 selected_tool=ToolName.FILTER_TOOL,
                 retrieval_strategy=RetrievalStrategy.METADATA,
                 rewritten_query=query,
                 # แก้ไข: ใส่ปีที่ตรวจพบลงใน ExtractedEntities
-                entities=ExtractedEntities(year=detected_year),
-                reasoning="Rule-based: ตรวจพบการระบุเงื่อนไข ปี หรือ คะแนน",
+                entities=filters,
+                reasoning="Rule-based: detected structured metadata filters such as season, rating, year, or type",
                 confidence=1.0
             )
 

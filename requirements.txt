@@ -1,4 +1,4 @@
-faiss==1.5.3
+faiss-cpu
 numpy==2.4.4
 openai==2.36.0
 pandas==3.0.3
@@ -8,3 +8,5 @@ transformers==4.41.2
 ONNX
 requests>=2.31.0
 google-api-python-client
+fastapi
+uvicorn

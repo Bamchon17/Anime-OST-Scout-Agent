@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import dataclasses
+import time
 from abc import ABC, abstractmethod
 from typing import Any, List, Dict
 
@@ -85,21 +86,47 @@ class AgentController:
             
             # 1. THINK (วางแผน)
             state.log_step("กำลังวางแผนการทำงาน...")
+            planning_started_at = time.perf_counter()
             plan = await self.planner.plan(
                 current_query=query,
                 context_summary=state.build_context_summary(),
                 conversation_history=state.conversation,
                 loop_count=state.loop_count # ส่ง loop_count เพิ่ม
             )
+            planning_duration_ms = self._elapsed_ms(planning_started_at)
             state.current_plan = plan
+
+            if plan.selected_tool == ToolName.NONE and plan.retrieval_strategy == RetrievalStrategy.SKIP:
+                state.log_step("ตรวจพบคำถามนอกขอบเขต anime/OST จึงไม่เรียกใช้เครื่องมือค้นหา")
+                state.final_answer = (
+                    "อันนี้อยู่นอกขอบเขตของ Luna ค่ะ\n"
+                    "Luna ช่วยเรื่องอนิเมะ มังงะ OST เพลงประกอบ การแนะนำ และการเปรียบเทียบอนิเมะได้ "
+                    "แต่ยังไม่รองรับการเปรียบเทียบมือถือหรือสินค้าเทคโนโลยีค่ะ\n\n"
+                    "ลองถามเช่น `เปรียบเทียบ Naruto กับ One Piece` หรือ "
+                    "`แนะนำอนิเมะแนวไซไฟเหงาๆ` ได้เลยนะคะ"
+                )
+                state.final_response_duration_ms = 0
+                state.log_step("จบการทำงาน")
+                return state
             state.log_step(f"แผนที่วางไว้: ใช้ {plan.selected_tool.value} เพราะ {plan.reasoning}")
 
             # 2. ACT (ลงมือทำ)
             state.log_step(f"กำลังเรียกใช้เครื่องมือ: {plan.selected_tool.value}...")
+            action_started_at = time.perf_counter()
             raw_results = await self._execute_action(plan, state)
+            action_duration_ms = self._elapsed_ms(action_started_at)
 
             # 3. OBSERVE (สังเกตผล)
+            observe_started_at = time.perf_counter()
             observation = self._observe(raw_results, state.loop_count)
+            observation.observe_duration_ms = self._elapsed_ms(observe_started_at)
+            observation.planning_duration_ms = planning_duration_ms
+            observation.action_duration_ms = action_duration_ms
+            observation.duration_ms = (
+                observation.planning_duration_ms
+                + observation.action_duration_ms
+                + observation.observe_duration_ms
+            )
             state.record_result(plan, observation)
             
             if observation.status == ObservationStatus.SATISFIED:
@@ -110,12 +137,20 @@ class AgentController:
         # 4. RESPOND (สรุปคำตอบ)
         if state.last_observation and state.last_observation.retrieved_data:
             state.log_step("กำลังสรุปคำตอบสุดท้ายจากข้อมูลที่พบ...")
+            synthesis_started_at = time.perf_counter()
             state.final_answer = await self._synthesize(state)
+            state.final_response_duration_ms = self._elapsed_ms(synthesis_started_at)
         else:
+            synthesis_started_at = time.perf_counter()
             state.final_answer = "ขอโทษน่า ลูน่าพยายามหาข้อมูลแล้วแต่ไม่พบจริงๆ ลองเปลี่ยนคำถามดูไหมคะ?"
+            state.final_response_duration_ms = self._elapsed_ms(synthesis_started_at)
 
         state.log_step("จบการทำงาน")
         return state
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        return max(1, round((time.perf_counter() - started_at) * 1000))
     
     async def _execute_action(self, plan: Any, state: AgentState) -> Dict[str, Any]:
         """จัดการการเรียก Tool หรือ Retrieval โดยตรง"""
@@ -153,7 +188,14 @@ class AgentController:
         # --- [PERSPECTIVE: คู่หูคิดสายลุย] ---
         # รองรับชื่อ tool ที่อาจมาได้หลายรูปแบบ
         if tool_used in ["compare_anime", "compare_tool"] and "comparison" in raw_results:
-            retrieved_items = [raw_results["comparison"]]
+            retrieved_items = [
+                {
+                    "tool": tool_used,
+                    "comparison": raw_results["comparison"],
+                    "records": raw_results.get("records", []),
+                    "not_found": raw_results.get("not_found", []),
+                }
+            ]
 
         # คำนวณคะแนนสูงสุด
         top_score = max([item.get("score", 0) for item in retrieved_items if isinstance(item, dict)], default=0.0)
@@ -167,7 +209,7 @@ class AgentController:
             feedback = "ไม่พบข้อมูลที่ตรงกับเงื่อนไข"
             
         # 2. กรณีพิเศษสำหรับ Filter และ Comparison (ถ้ามีข้อมูลให้ผ่านทันที)
-        elif tool_used in ["filter_search", "filter_tool", "compare_anime", "compare_tool"]:
+        elif tool_used in ["filter_search", "filter_tool", "compare_anime", "compare_tool", "music_lookup", "music_tool"]:
             status = ObservationStatus.SATISFIED
             feedback = f"สำเร็จ! พบข้อมูลจาก {tool_used}"
             
@@ -214,7 +256,8 @@ class AgentController:
             final_answer = await self.responder_llm.complete(
                 system_prompt=synthesis_prompt,
                 user_message=synthesis_message,
-                temperature=0.7
+                temperature=0.7,
+                max_tokens=1800,
             )
             return final_answer
         except Exception as e:

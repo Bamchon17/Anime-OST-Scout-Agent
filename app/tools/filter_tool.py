@@ -93,6 +93,7 @@ def run(
     season: str | None = None,
     type: str | None = None,
     rating_min: float | None = None,
+    rating_max: float | None = None,
     tags: list | None = None,
     studio: str | None = None,
     top_k: int = 5,
@@ -127,6 +128,10 @@ def run(
     if rating_min is not None:
         df = df[df["rating"] >= rating_min]
         applied_filters.append(f"rating>={rating_min}")
+
+    if rating_max is not None:
+        df = df[df["rating"] <= rating_max]
+        applied_filters.append(f"rating<={rating_max}")
 
     # Filter: Tags (กรองจาก tags_raw ที่เป็น string คั่นด้วย |)
     if tags and isinstance(tags, list):

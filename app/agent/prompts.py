@@ -11,6 +11,75 @@ Design principles:
 
 from __future__ import annotations
 import json
+
+
+def is_music_query(query: str) -> bool:
+    q = query.lower()
+    return any(keyword in q for keyword in ["เพลง", "ost", "soundtrack", "music", "ฟัง", "youtube"])
+
+
+def format_comparison_item(original_query: str, item: dict) -> str:
+    comparison = item.get("comparison", {})
+    titles = comparison.get("titles", [])
+    basic = comparison.get("basic", {})
+    staff = comparison.get("staff", {})
+    shared_tags = comparison.get("shared_tags", [])
+    unique_tags = comparison.get("unique_tags", {})
+    cast = comparison.get("cast", {})
+    rating_rank = comparison.get("rating_rank", [])
+
+    lines = [
+        f"คำถามจากผู้ใช้: {original_query}",
+        "",
+        "ข้อมูลเปรียบเทียบจาก compare_tool:",
+        f"เรื่องที่เปรียบเทียบ: {', '.join(titles)}",
+        "",
+        "[Basic Info]",
+    ]
+
+    for title in titles:
+        info = basic.get(title, {})
+        lines.append(
+            f"- {title}: ปี {info.get('year') or 'N/A'}, season {info.get('season') or 'N/A'}, "
+            f"type {info.get('type') or 'N/A'}, rating {info.get('rating') or 'N/A'}, studio {info.get('studio') or 'N/A'}"
+        )
+
+    lines.extend(["", "[Staff / Production]"])
+    for title in titles:
+        info = staff.get(title, {})
+        lines.append(
+            f"- {title}: director={info.get('director') or 'N/A'}; "
+            f"music={info.get('music') or 'N/A'}; original_work={info.get('original_work') or 'N/A'}"
+        )
+
+    lines.extend(["", "[Themes / Tags]"])
+    lines.append(f"- Shared tags: {', '.join(shared_tags) if shared_tags else 'N/A'}")
+    for title in titles:
+        tags = unique_tags.get(title, [])
+        lines.append(f"- Unique tags for {title}: {', '.join(tags[:10]) if tags else 'N/A'}")
+
+    lines.extend(["", "[Top Cast]"])
+    for title in titles:
+        cast_list = cast.get(title, [])
+        lines.append(f"- {title}: {', '.join(cast_list) if cast_list else 'N/A'}")
+
+    lines.extend(["", "[Rating Rank]"])
+    for index, row in enumerate(rating_rank, 1):
+        lines.append(f"{index}. {row.get('title')}: {row.get('rating')}")
+
+    lines.extend(
+        [
+            "",
+            "คำสั่งบังคับ:",
+            "- ตอบเป็นภาษาไทยในบุคลิก Luna",
+            "- ต้องเปรียบเทียบแบบ side-by-side ไม่ใช่บอกว่าไม่มีข้อมูล",
+            "- ตอบคำถามหลักให้ชัดเจนว่าเรื่องไหนคะแนนสูงกว่า พร้อมตัวเลข rating",
+            "- สรุปจุดต่างด้านเรื่อง/ธีม, งานสร้าง, ทีมงาน, และภาพรวมความเหมาะกับผู้ชม",
+            "- ห้ามพูดถึงเพลงแนะนำหรือ YouTube ถ้าผู้ใช้ไม่ได้ถามเพลง",
+        ]
+    )
+
+    return "\n".join(lines)
 # ─────────────────────────────────────────────
 #  Domain context (swap this for another project)
 # ─────────────────────────────────────────────
@@ -198,13 +267,18 @@ def build_synthesis_prompt() -> str:
 import json
 
 def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]) -> str:
+    if len(retrieved_data) == 1 and isinstance(retrieved_data[0], dict) and retrieved_data[0].get("comparison"):
+        return format_comparison_item(original_query, retrieved_data[0])
+
+    include_music = is_music_query(original_query)
+    item_count = len(retrieved_data)
     # 1. กำหนด Base URL ของรูปภาพ (ตรวจสอบให้ตรงกับที่เก็บไฟล์จริงนะคะ)
     IMAGE_BASE_URL = "https://your-storage-endpoint.com/data/images/" 
     
     prepared_items = []
     for item in retrieved_data:
         # ดึงชื่อเรื่อง
-        title = item.get('main_title') or item.get('title_en') or item.get('id') or "Unknown Title"
+        title = item.get('main_title') or item.get('title_en') or item.get('title') or item.get('id') or "Unknown Title"
         
         # 2. จัดการรูปภาพ
         poster = item.get('poster_image') or item.get('backdrop_image')
@@ -241,18 +315,35 @@ def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]
             themes = item.get('themes', [])
             if themes:
                 yt_link = themes[0].get('youtube_url')
-        if yt_link:
+        if include_music and yt_link:
             primary_links.append(f"[▶ YouTube]({yt_link})")
+
+        music_credit = item.get('music') or item.get('composer')
+
+        metadata_parts = []
+        if item.get('season'):
+            metadata_parts.append(f"Season: {item.get('season')}")
+        if item.get('year'):
+            metadata_parts.append(f"Year: {item.get('year')}")
+        if item.get('rating'):
+            metadata_parts.append(f"Rating: {item.get('rating')}")
+        if item.get('type'):
+            metadata_parts.append(f"Type: {item.get('type')}")
+        if item.get('studio'):
+            metadata_parts.append(f"Studio: {item.get('studio')}")
+        metadata_line = " | ".join(metadata_parts) if metadata_parts else "N/A"
 
         # themes block (กรณี music mode)
         themes_block = ""
-        if item.get('themes'):
+        if include_music and item.get('themes'):
             lines = []
             for t in item['themes']:
                 yt = t.get('youtube_url')
                 yt_str = f" → [▶ ฟัง]({yt})" if yt else ""
                 lines.append(f"  - **{t.get('type','?')}**: {t.get('song','?')} — {t.get('artist','?')}{yt_str}")
             themes_block = "\n**🎵 เพลงประกอบ:**\n" + "\n".join(lines)
+        elif include_music and music_credit:
+            themes_block = f"\n**🎵 ข้อมูลดนตรี/OST:** {music_credit}\n"
 
         # รวม links เป็น string — แยก primary และ secondary
         primary_str   = " | ".join(primary_links)   if primary_links   else ""
@@ -267,6 +358,7 @@ def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]
         # สร้าง Block ข้อมูลสำหรับ 1 เรื่อง
         item_block = (
             f"### {title}\n"
+            f"**Metadata:** {metadata_line}\n"
             f"{f'![{title}]({poster_url})' if poster_url else '[ไม่มีรูปภาพ]'}\n"
             f"**รายละเอียด:** {item.get('synopsis') or item.get('synopsis_short') or 'N/A'}\n"
             f"{themes_block}\n"
@@ -282,9 +374,11 @@ def build_synthesis_user_message(original_query: str, retrieved_data: list[dict]
         "═══════════════════════════════════════\n"
         "คำสั่งบังคับสำหรับลูน่า (ห้ามละเว้น):\n"
         "═══════════════════════════════════════\n"
+        f"0. MUST cover all {item_count} retrieved anime items. Do not skip any item. Create one section per item.\n"
+        f"0. Music/OST mode is {'ON' if include_music else 'OFF'}. If OFF, do NOT mention YouTube, เพลงแนะนำ, เพลงประกอบ, or OST links.\n"
         "1. ตอบเป็นภาษาไทยในบุคลิก 'ลูน่า' (น่ารัก, ร่าเริง, เป็นกันเอง)\n"
         "2. ทุกเรื่องที่พูดถึง **ต้องมีส่วน 📌 แหล่งข้อมูล เสมอ** — ห้ามตัดออก\n"
         "3. Copy URL จากส่วน '📌 แหล่งข้อมูล' ในข้อมูลที่ได้รับมาตรงๆ ห้ามแต่งเอง\n"
-        "4. ถ้ามีเพลงประกอบ ให้แสดง song list พร้อมลิงก์ YouTube ทุกเพลง\n"
+        "4. แสดงเพลง/YouTube เฉพาะเมื่อ Music/OST mode is ON เท่านั้น\n"
         "5. หากข้อมูลไม่ตรงกับคำถาม ให้ขอโทษอย่างสุภาพและแนะนำสิ่งที่ใกล้เคียงที่สุด"
     )
