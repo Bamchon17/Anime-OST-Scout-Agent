@@ -7,6 +7,8 @@ import os
 import json
 from pathlib import Path
 
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+
 # Fix UTF-8 encoding for Windows console
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')

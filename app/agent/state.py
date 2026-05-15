@@ -45,15 +45,19 @@ class ObservationStatus(str, Enum):
 @dataclass
 class ExtractedEntities:
     """แกะจาก Query เพื่อใช้ใน Filter Tool หรือ Music Tool"""
-    tags: list[str] = field(default_factory=list)      
+    tags: list[str] = field(default_factory=list)
     char_tags: list[str] = field(default_factory=list)
     studio: Optional[str] = None
     year: Optional[int] = None
-    season: Optional[str] = None                     
+    year_from: Optional[int] = None
+    year_to: Optional[int] = None
+    season: Optional[str] = None
     music_style: Optional[str] = None
-    rating: Optional[float] = None                     
-    type: Optional[str] = None                         
-    anime_title: Optional[List[str]] = None #
+    rating: Optional[float] = None
+    rating_min: Optional[float] = None
+    rating_max: Optional[float] = None
+    type: Optional[str] = None
+    anime_title: Optional[List[str]] = None
 
 @dataclass
 class ActionPlan:
