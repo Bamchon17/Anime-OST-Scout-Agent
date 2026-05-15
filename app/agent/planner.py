@@ -340,7 +340,21 @@ class Planner:
         # --- [Rule-based: Music] ---
         if any(k in q_lower for k in ["เพลง", "music", "ost", "soundtrack"]):
             # เช็คว่าเป็นการ "ขอลิงก์/ขอฟัง" หรือแค่ "ถามข้อมูลเพลง"
-            is_asking_for_link = any(k in q_lower for k in ["ขอฟัง", "ขอลิงก์", "เปิดเพลง", "ฟังเพลง", "ขอลิ้ง", "link"])
+            is_asking_for_link = any(k in q_lower for k in [
+                "ขอเพลง",
+                "หาเพลง",
+                "ขอฟัง",
+                "ขอลิงก์",
+                "ขอลิงค์",
+                "ขอลิ้ง",
+                "ขอลิ้งก์",
+                "ขอลิ้งค์",
+                "เปิดเพลง",
+                "ฟังเพลง",
+                "youtube",
+                "ยูทูป",
+                "link",
+            ])
             
             return ActionPlan(
                 intent=Intent.RECOMMEND,

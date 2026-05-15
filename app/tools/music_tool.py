@@ -55,6 +55,11 @@ def detect_song_request(query: str) -> Optional[str]:
         if kw in query:
             # ตัด keyword ออก เหลือแค่ชื่อเรื่อง
             title = re.sub(rf".*{kw}\s*(จากเรื่อง\s*)?", "", query, flags=re.IGNORECASE).strip()
+            title = re.split(
+                r"\s*(?:หน่อยสิ|หน่อยนะ|หน่อย|เอาที่|ที่มี|พร้อม|ด้วย|ขอแบบ|แบบ)\s*",
+                title,
+                maxsplit=1,
+            )[0].strip()
             # ตัด suffix เช่น "หน่อย", "ได้เลย"
             title = re.sub(r"\s*(หน่อยสิ|หน่อยนะ|หน่อย|ได้เลย|ด้วย|นะคะ|นะครับ|นะ|สิ|ครับ|ค่ะ)$", "", title).strip()
             return title if title else None
@@ -202,6 +207,8 @@ async def run(query: str, meta: List[Dict], include_external: bool = False, top_
         search_target = title_query if title_query else query
         item = find_by_title(meta, search_target)
         if not item and include_external:
+            item = find_title_mentioned_in_query(meta, query)
+        if not item and title_query:
             item = find_title_mentioned_in_query(meta, query)
 
         if not item:
